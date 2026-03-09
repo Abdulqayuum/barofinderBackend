@@ -35,3 +35,19 @@ export function optionalAuth(req, res, next) {
   }
   next();
 }
+
+export async function adminMiddleware(req, res, next) {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized', code: 'UNAUTHORIZED' });
+
+  try {
+    const [rows] = await db.query('SELECT role FROM profiles WHERE user_id = ?', [req.user.id]);
+    const profile = rows[0];
+
+    if (!profile || profile.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required', code: 'FORBIDDEN' });
+    }
+    next();
+  } catch (err) {
+    return res.status(500).json({ error: 'Admin check failed', code: 'INTERNAL_ERROR' });
+  }
+}

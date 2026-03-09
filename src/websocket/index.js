@@ -29,6 +29,11 @@ export function setupWebSocket(server) {
     socket.on('leave-conversation', (conversationId) => {
       socket.leave(`conversation:${conversationId}`);
     });
+
+    socket.on('typing', (payload) => {
+      // payload = { conversation_id, user_id }
+      socket.to(`conversation:${payload.conversation_id}`).emit('typing', payload);
+    });
   });
 
   return io;

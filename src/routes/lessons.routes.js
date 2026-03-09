@@ -133,9 +133,12 @@ router.post('/lessons/:id/complete', authMiddleware, wrap(async (req, res) => {
       [req.user.id, lesson.course_id, id]
     );
   } else {
+    // Toggle
+    const current = await db.query('SELECT completed FROM lesson_progress WHERE id = ?', [existing[0].id]);
+    const newState = !current[0][0].completed;
     await db.query(
-      'UPDATE lesson_progress SET completed = TRUE, completed_at = NOW() WHERE student_id = ? AND lesson_id = ?',
-      [req.user.id, id]
+      'UPDATE lesson_progress SET completed = ?, completed_at = ? WHERE id = ?',
+      [newState, newState ? new Date() : null, existing[0].id]
     );
   }
 
@@ -171,6 +174,28 @@ router.get('/courses/:id/progress', authMiddleware, wrap(async (req, res) => {
   const percentage = total > 0 ? Math.round((completed / total) * 100) : 0;
 
   res.json({ completed, total, percentage });
+}));
+
+router.get('/courses/:id/all-progress', authMiddleware, wrap(async (req, res) => {
+  const { id } = req.params;
+  const [courseRows] = await db.query('SELECT user_id FROM courses WHERE id = ?', [id]);
+  const course = courseRows[0];
+  if (!course) return res.status(404).json({ error: 'Course not found', code: 'NOT_FOUND' });
+  if (course.user_id !== req.user.id) return res.status(403).json({ error: 'Forbidden', code: 'FORBIDDEN' });
+
+  const [rows] = await db.query(
+    'SELECT student_id, lesson_id, completed FROM lesson_progress WHERE course_id = ?',
+    [id]
+  );
+  res.json(rows);
+}));
+
+router.get('/my-progress', authMiddleware, wrap(async (req, res) => {
+  const [rows] = await db.query(
+    'SELECT course_id, lesson_id, completed FROM lesson_progress WHERE student_id = ?',
+    [req.user.id]
+  );
+  res.json(rows);
 }));
 
 export default router;

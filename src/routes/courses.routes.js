@@ -160,4 +160,43 @@ router.delete('/:id', authMiddleware, wrap(async (req, res) => {
   res.json({ message: 'Course deleted' });
 }));
 
+router.get('/tutor/student-progress', authMiddleware, wrap(async (req, res) => {
+  // First, get all courses owned by this tutor
+  const [courses] = await db.query('SELECT id, title FROM courses WHERE user_id = ?', [req.user.id]);
+  if (courses.length === 0) return res.json({ enrollments: [], lessons: [], progress: [], profiles: [] });
+
+  const courseIds = courses.map(c => c.id);
+
+  // Get approved enrollments
+  const [enrollments] = await db.query(
+    'SELECT * FROM course_enrollments WHERE course_id IN (?) AND status = "approved"',
+    [courseIds]
+  );
+
+  // Get lessons
+  const [lessons] = await db.query(
+    'SELECT id, course_id, title, sort_order FROM course_lessons WHERE course_id IN (?) ORDER BY sort_order ASC',
+    [courseIds]
+  );
+
+  // Get progress
+  const [progress] = await db.query(
+    'SELECT student_id, lesson_id, course_id, completed, completed_at FROM lesson_progress WHERE course_id IN (?)',
+    [courseIds]
+  );
+
+  // Get student profiles
+  const studentIds = [...new Set(enrollments.map(e => e.student_id))];
+  let profiles = [];
+  if (studentIds.length > 0) {
+    const [pRows] = await db.query(
+      'SELECT user_id, full_name, email FROM profiles WHERE user_id IN (?)',
+      [studentIds]
+    );
+    profiles = pRows;
+  }
+
+  res.json({ enrollments, lessons, progress, profiles });
+}));
+
 export default router;

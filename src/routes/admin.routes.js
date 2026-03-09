@@ -16,7 +16,29 @@ router.get('/overview', wrap(async (_req, res) => {
   const [[pendingApprovals]] = await db.query("SELECT COUNT(*) AS pending_approvals FROM tutor_profiles WHERE verification_status = 'pending'");
   const [[activeSubs]] = await db.query("SELECT COUNT(*) AS active_subs, COALESCE(SUM(amount), 0) AS total_revenue FROM subscriptions WHERE status = 'active'");
   const [[totalCourses]] = await db.query('SELECT COUNT(*) AS total_courses FROM courses');
+  const [[publishedCourses]] = await db.query('SELECT COUNT(*) AS published_courses FROM courses WHERE is_published = 1 AND status != "suspended"');
   const [[totalEnrollments]] = await db.query('SELECT COUNT(*) AS total_enrollments FROM course_enrollments');
+  const [[pendingEnrollments]] = await db.query('SELECT COUNT(*) AS pending_enrollments FROM course_enrollments WHERE status = "pending"');
+
+  const [recentUsers] = await db.query(
+    'SELECT p.full_name, p.email, p.role, p.created_at FROM profiles p ORDER BY p.created_at DESC LIMIT 5'
+  );
+
+  const [recentTutors] = await db.query(
+    `SELECT p.full_name AS name, tp.verification_status AS status, tp.created_at 
+     FROM tutor_profiles tp JOIN profiles p ON p.user_id = tp.user_id 
+     ORDER BY tp.created_at DESC LIMIT 5`
+  );
+
+  const [revenueData] = await db.query(
+    `SELECT DATE_FORMAT(created_at, '%Y-%m') AS month, SUM(amount) AS revenue 
+     FROM subscriptions WHERE status = 'active'
+     GROUP BY month ORDER BY month DESC LIMIT 6`
+  );
+
+  const [enrollmentStatusData] = await db.query(
+    'SELECT status, COUNT(*) AS count FROM course_enrollments GROUP BY status'
+  );
 
   res.json({
     total_users: totalUsers.total_users,
@@ -25,7 +47,13 @@ router.get('/overview', wrap(async (_req, res) => {
     active_subs: activeSubs.active_subs,
     total_revenue: activeSubs.total_revenue,
     total_courses: totalCourses.total_courses,
-    total_enrollments: totalEnrollments.total_enrollments
+    published_courses: publishedCourses.published_courses,
+    total_enrollments: totalEnrollments.total_enrollments,
+    pending_enrollments: pendingEnrollments.pending_enrollments,
+    recent_users: recentUsers,
+    recent_tutors: recentTutors,
+    revenue_data: revenueData.reverse(),
+    enrollment_status: enrollmentStatusData
   });
 }));
 
@@ -38,6 +66,20 @@ router.get('/users', wrap(async (req, res) => {
      ORDER BY p.created_at DESC`,
     q ? [q, q] : []
   );
+
+  if (rows.length > 0) {
+    const userIds = rows.map(r => r.user_id);
+    const [roleRows] = await db.query('SELECT user_id, role FROM user_roles WHERE user_id IN (?)', [userIds]);
+    const roleMap = {};
+    roleRows.forEach(rr => {
+      if (!roleMap[rr.user_id]) roleMap[rr.user_id] = [];
+      roleMap[rr.user_id].push(rr.role);
+    });
+    rows.forEach(r => {
+      r.app_roles = roleMap[r.user_id] || [];
+    });
+  }
+
   res.json(rows);
 }));
 
@@ -68,6 +110,19 @@ router.patch('/users/:id/suspend', wrap(async (req, res) => {
   res.json({ status: newStatus });
 }));
 
+router.post('/users/:id/roles', wrap(async (req, res) => {
+  const { id } = req.params;
+  const { role } = req.body;
+  await db.query('INSERT IGNORE INTO user_roles (user_id, role) VALUES (?, ?)', [id, role || 'user']);
+  res.json({ message: 'Role assigned' });
+}));
+
+router.delete('/users/:id/roles', wrap(async (req, res) => {
+  const { id } = req.params;
+  await db.query('DELETE FROM user_roles WHERE user_id = ?', [id]);
+  res.json({ message: 'Roles removed' });
+}));
+
 router.get('/tutors', wrap(async (_req, res) => {
   const [rows] = await db.query(
     `SELECT tp.*, p.full_name, p.email, p.city, p.status
@@ -89,7 +144,12 @@ router.patch('/tutors/:id/verify', wrap(async (req, res) => {
 }));
 
 router.get('/subscriptions', wrap(async (_req, res) => {
-  const [rows] = await db.query('SELECT * FROM subscriptions ORDER BY created_at DESC');
+  const [rows] = await db.query(
+    `SELECT s.*, p.full_name AS tutor_name, p.email AS tutor_email
+     FROM subscriptions s
+     LEFT JOIN profiles p ON p.user_id = s.user_id
+     ORDER BY s.created_at DESC`
+  );
   res.json(rows);
 }));
 
@@ -110,13 +170,30 @@ router.patch('/subscriptions/:id', wrap(async (req, res) => {
   res.json(rows[0]);
 }));
 
+router.delete('/subscriptions/:id', wrap(async (req, res) => {
+  await db.query('DELETE FROM subscriptions WHERE id = ?', [req.params.id]);
+  res.json({ message: 'Deleted' });
+}));
+
 router.get('/courses', wrap(async (_req, res) => {
-  const [rows] = await db.query('SELECT * FROM courses ORDER BY created_at DESC');
+  const [rows] = await db.query(
+    `SELECT c.*, p.full_name AS tutor_name
+     FROM courses c
+     JOIN profiles p ON p.user_id = c.user_id
+     ORDER BY c.created_at DESC`
+  );
   res.json(rows);
 }));
 
 router.get('/enrollments', wrap(async (_req, res) => {
-  const [rows] = await db.query('SELECT * FROM course_enrollments ORDER BY created_at DESC');
+  const [rows] = await db.query(
+    `SELECT e.*, p.full_name AS student_name, c.title AS course_title, tp_p.full_name AS tutor_name
+     FROM course_enrollments e
+     JOIN profiles p ON p.user_id = e.student_id
+     JOIN courses c ON c.id = e.course_id
+     JOIN profiles tp_p ON tp_p.user_id = c.user_id
+     ORDER BY e.created_at DESC`
+  );
   res.json(rows);
 }));
 
@@ -129,8 +206,21 @@ router.patch('/enrollments/:id', wrap(async (req, res) => {
 }));
 
 router.get('/reviews', wrap(async (_req, res) => {
-  const [tutorReviews] = await db.query('SELECT * FROM reviews ORDER BY created_at DESC');
-  const [courseReviews] = await db.query('SELECT * FROM course_reviews ORDER BY created_at DESC');
+  const [tutorReviews] = await db.query(
+    `SELECT r.*, p.full_name AS student_name, tp_p.full_name AS tutor_name
+     FROM reviews r
+     JOIN profiles p ON p.user_id = r.student_id
+     JOIN tutor_profiles tp ON tp.id = r.tutor_id
+     JOIN profiles tp_p ON tp_p.user_id = tp.user_id
+     ORDER BY r.created_at DESC`
+  );
+  const [courseReviews] = await db.query(
+    `SELECT cr.*, p.full_name AS student_name, c.title AS course_title
+     FROM course_reviews cr
+     JOIN profiles p ON p.user_id = cr.student_id
+     JOIN courses c ON c.id = cr.course_id
+     ORDER BY cr.created_at DESC`
+  );
   res.json({ tutor_reviews: tutorReviews, course_reviews: courseReviews });
 }));
 
@@ -142,23 +232,59 @@ router.delete('/reviews/:id', wrap(async (req, res) => {
 }));
 
 router.get('/messages', wrap(async (_req, res) => {
-  const [rows] = await db.query('SELECT * FROM conversations ORDER BY updated_at DESC');
+  const [rows] = await db.query(
+    `SELECT c.*, p1.full_name AS student_name, p2.full_name AS tutor_name,
+     (SELECT content FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1) AS last_message,
+     (SELECT COUNT(*) FROM messages WHERE conversation_id = c.id) AS message_count
+     FROM conversations c
+     JOIN profiles p1 ON p1.user_id = c.participant1_id
+     JOIN profiles p2 ON p2.user_id = c.participant2_id
+     ORDER BY c.updated_at DESC`
+  );
   res.json(rows);
+}));
+
+router.get('/messages/:id/messages', wrap(async (req, res) => {
+  const [rows] = await db.query(
+    `SELECT m.*, p.full_name AS sender_name
+     FROM messages m
+     JOIN profiles p ON p.user_id = m.sender_id
+     WHERE m.conversation_id = ?
+     ORDER BY m.created_at ASC`,
+    [req.params.id]
+  );
+  res.json(rows);
+}));
+
+router.delete('/messages/message/:id', wrap(async (req, res) => {
+  await db.query('DELETE FROM messages WHERE id = ?', [req.params.id]);
+  res.json({ message: 'Message deleted' });
 }));
 
 router.delete('/messages/:id', wrap(async (req, res) => {
   const { id } = req.params;
+  await db.query('DELETE FROM messages WHERE conversation_id = ?', [id]);
   await db.query('DELETE FROM conversations WHERE id = ?', [id]);
   res.json({ message: 'Conversation deleted' });
 }));
 
 router.get('/activity-logs', wrap(async (_req, res) => {
-  const [rows] = await db.query('SELECT * FROM activity_logs ORDER BY created_at DESC');
+  const [rows] = await db.query(
+    `SELECT al.*, p.full_name, p.role
+     FROM activity_logs al
+     LEFT JOIN profiles p ON p.user_id = al.user_id
+     ORDER BY al.created_at DESC`
+  );
   res.json(rows);
 }));
 
 router.get('/notifications', wrap(async (_req, res) => {
-  const [rows] = await db.query('SELECT * FROM notifications ORDER BY created_at DESC');
+  const [rows] = await db.query(
+    `SELECT n.*, p.full_name
+     FROM notifications n
+     LEFT JOIN profiles p ON p.user_id = n.user_id
+     ORDER BY n.created_at DESC`
+  );
   res.json(rows);
 }));
 
@@ -402,6 +528,35 @@ router.patch('/settings/:id', wrap(async (req, res) => {
 router.delete('/settings/:id', wrap(async (req, res) => {
   await db.query('DELETE FROM app_settings WHERE id = ?', [req.params.id]);
   res.json({ message: 'Deleted' });
+}));
+
+/* ─── Activity Logs ────────────────────────────────────────── */
+router.get('/activity-logs', wrap(async (_req, res) => {
+  const [logs] = await db.query('SELECT * FROM activity_logs ORDER BY created_at DESC LIMIT 100');
+  res.json(logs);
+}));
+
+/* ─── Notifications ────────────────────────────────────────── */
+router.get('/notifications', wrap(async (_req, res) => {
+  // Fix: some DBs use user_id IS NULL for admin notifications
+  const [notifs] = await db.query('SELECT * FROM notifications WHERE user_id IS NULL ORDER BY created_at DESC LIMIT 50');
+  res.json(notifs);
+}));
+
+router.patch('/notifications/mark-all-read', wrap(async (_req, res) => {
+  await db.query('UPDATE notifications SET is_read = 1 WHERE user_id IS NULL AND is_read = 0');
+  res.json({ success: true });
+}));
+
+router.patch('/notifications/:id', wrap(async (req, res) => {
+  const { is_read } = req.body;
+  await db.query('UPDATE notifications SET is_read = ? WHERE id = ?', [is_read ? 1 : 0, req.params.id]);
+  res.json({ success: true });
+}));
+
+router.delete('/notifications', wrap(async (_req, res) => {
+  await db.query('DELETE FROM notifications WHERE user_id IS NULL');
+  res.json({ success: true });
 }));
 
 export default router;

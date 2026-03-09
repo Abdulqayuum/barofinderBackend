@@ -1,8 +1,8 @@
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import http from 'http';
-import dotenv from 'dotenv';
 import { testConnection } from './config/database.js';
 import { setupWebSocket } from './websocket/index.js';
 import { apiRateLimiter } from './middleware/rate-limit.js';
@@ -22,8 +22,6 @@ import notificationRoutes from './routes/notifications.routes.js';
 import lookupRoutes from './routes/lookups.routes.js';
 import adminRoutes from './routes/admin.routes.js';
 import uploadRoutes from './routes/upload.routes.js';
-
-dotenv.config();
 
 const app = express();
 const server = http.createServer(app);
@@ -48,8 +46,8 @@ const corsOptions = {
 app.use(helmet());
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '1mb' }));
-app.use(apiRateLimiter);
 app.use('/uploads', express.static('uploads'));
+app.use('/api', apiRateLimiter);
 
 app.use('/api/auth', authRoutes);
 app.use('/api/profiles', profileRoutes);
@@ -68,7 +66,8 @@ app.use('/api/upload', uploadRoutes);
 
 app.use(errorHandler);
 
-setupWebSocket(server);
+const io = setupWebSocket(server);
+app.set('io', io);
 
 const PORT = process.env.PORT || 3000;
 

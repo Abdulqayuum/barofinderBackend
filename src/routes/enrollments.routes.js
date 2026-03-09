@@ -54,7 +54,14 @@ router.get('/courses/:id/enrollments', authMiddleware, wrap(async (req, res) => 
   if (!course) return res.status(404).json({ error: 'Course not found', code: 'NOT_FOUND' });
   if (course.user_id !== req.user.id) return res.status(403).json({ error: 'Forbidden', code: 'FORBIDDEN' });
 
-  const [rows] = await db.query('SELECT * FROM course_enrollments WHERE course_id = ? ORDER BY created_at DESC', [id]);
+  const [rows] = await db.query(
+    `SELECT e.*, p.full_name, p.email
+     FROM course_enrollments e
+     JOIN profiles p ON p.user_id = e.student_id
+     WHERE e.course_id = ?
+     ORDER BY e.created_at DESC`,
+    [id]
+  );
   res.json(rows);
 }));
 
@@ -98,10 +105,13 @@ router.patch('/enrollments/:id', authMiddleware, validateBody(enrollmentUpdateSc
 
 router.get('/my-learning', authMiddleware, wrap(async (req, res) => {
   const [rows] = await db.query(
-    `SELECT e.*, c.title, c.subject, c.price, c.currency, c.cover_image_url, c.tutor_id
+    `SELECT
+       e.*,
+       c.title, c.description, c.subject, c.price, c.currency, c.cover_image_url,
+       (SELECT COUNT(*) FROM course_lessons WHERE course_id = c.id) AS lesson_count
      FROM course_enrollments e
      JOIN courses c ON c.id = e.course_id
-     WHERE e.student_id = ? AND e.status = 'approved'
+     WHERE e.student_id = ?
      ORDER BY e.created_at DESC`,
     [req.user.id]
   );

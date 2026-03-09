@@ -100,7 +100,14 @@ router.post('/:id/messages', authMiddleware, validateBody(messageCreateSchema), 
   );
 
   const [rows] = await db.query('SELECT * FROM messages WHERE id = ?', [msgId]);
-  res.status(201).json(rows[0]);
+  const message = rows[0];
+
+  const io = req.app.get('io');
+  if (io) {
+    io.to(`conversation:${id}`).emit('message', message);
+  }
+
+  res.status(201).json(message);
 }));
 
 router.patch('/:id/messages/read', authMiddleware, wrap(async (req, res) => {

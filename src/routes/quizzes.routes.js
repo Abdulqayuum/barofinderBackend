@@ -35,7 +35,19 @@ router.get('/courses/:id/quizzes', optionalAuth, wrap(async (req, res) => {
     return res.status(403).json({ error: 'Forbidden', code: 'FORBIDDEN' });
   }
 
-  const [rows] = await db.query('SELECT * FROM course_quizzes WHERE course_id = ? ORDER BY sort_order ASC', [id]);
+  const { lesson_id } = req.query;
+  let sql = 'SELECT * FROM course_quizzes WHERE course_id = ?';
+  const params = [id];
+
+  if (lesson_id === 'null' || lesson_id === null) {
+    sql += ' AND lesson_id IS NULL';
+  } else if (lesson_id) {
+    sql += ' AND lesson_id = ?';
+    params.push(lesson_id);
+  }
+
+  sql += ' ORDER BY sort_order ASC';
+  const [rows] = await db.query(sql, params);
   res.json(rows);
 }));
 

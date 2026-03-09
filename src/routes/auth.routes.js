@@ -165,6 +165,24 @@ router.post('/update-password', authMiddleware, validateBody(updatePasswordSchem
   res.json({ message: 'Password updated' });
 }));
 
+router.post('/confirm-reset', wrap(async (req, res) => {
+  const { token, password } = req.body;
+  const [rows] = await db.query(
+    'SELECT id FROM users WHERE reset_token = ? AND reset_token_expires > NOW()',
+    [token]
+  );
+  const user = rows[0];
+  if (!user) return res.status(401).json({ error: 'Invalid or expired token', code: 'UNAUTHORIZED' });
+
+  const passwordHash = await bcrypt.hash(password, BCRYPT_SALT_ROUNDS);
+  await db.query(
+    'UPDATE users SET password_hash = ?, reset_token = NULL, reset_token_expires = NULL WHERE id = ?',
+    [passwordHash, user.id]
+  );
+
+  res.json({ message: 'Password updated' });
+}));
+
 router.get('/me', authMiddleware, wrap(async (req, res) => {
   const [profiles] = await db.query('SELECT * FROM profiles WHERE user_id = ?', [req.user.id]);
   const profile = profiles[0];
