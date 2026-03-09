@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import db from '../config/database.js';
 import { authMiddleware } from '../middleware/auth.js';
-import { tutorPhotoUpload, courseCoverUpload } from '../config/storage.js';
+import { tutorPhotoUpload, courseCoverUpload, tutorDocumentUpload } from '../config/storage.js';
 import { wrap } from '../middleware/error-handler.js';
 
 const router = Router();
@@ -21,6 +21,25 @@ router.post('/course-cover', authMiddleware, courseCoverUpload().single('cover')
 
   const url = `${process.env.API_BASE_URL || ''}/uploads/course-covers/${file.filename}`;
   res.json({ url });
+}));
+
+router.post('/tutor-document', authMiddleware, tutorDocumentUpload().single('document'), wrap(async (req, res) => {
+  const file = req.file;
+  if (!file) return res.status(400).json({ error: 'No file uploaded', code: 'VALIDATION_ERROR' });
+
+  const url = `${process.env.API_BASE_URL || ''}/uploads/tutor-documents/${file.filename}`;
+
+  const [rows] = await db.query('SELECT verification_documents FROM tutor_profiles WHERE user_id = ?', [req.user.id]);
+  let docs = [];
+  if (rows[0] && rows[0].verification_documents) {
+    docs = typeof rows[0].verification_documents === 'string'
+      ? JSON.parse(rows[0].verification_documents)
+      : rows[0].verification_documents;
+  }
+  docs.push({ name: file.originalname, url, uploaded_at: new Date() });
+
+  await db.query('UPDATE tutor_profiles SET verification_documents = ? WHERE user_id = ?', [JSON.stringify(docs), req.user.id]);
+  res.json({ url, documents: docs });
 }));
 
 export default router;

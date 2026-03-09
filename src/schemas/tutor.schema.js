@@ -10,7 +10,7 @@ export const upsertTutorSchema = z.object({
   bio: z.string().min(1),
   education: z.string().optional().nullable(),
   teaching_style: z.string().optional().nullable(),
-  experience_years: z.number().int().min(0).optional().nullable(),
+  experience_years: z.number().min(0).optional().nullable(),
   gender: z.enum(['male', 'female', 'other']).optional().nullable(),
   subjects: z.array(z.string()).min(1),
   levels: z.array(z.string()).optional().nullable(),
@@ -23,5 +23,6 @@ export const upsertTutorSchema = z.object({
   currency: z.string().optional().nullable(),
   packages: z.array(z.object({ sessions: z.number(), price: z.number() })).optional().nullable(),
   availability: z.array(availabilityItem).optional().nullable(),
-  profile_photo_url: z.string().url().optional().nullable()
+  profile_photo_url: z.string().optional().nullable(),
+  verification_documents: z.array(z.any()).optional().nullable()
 });

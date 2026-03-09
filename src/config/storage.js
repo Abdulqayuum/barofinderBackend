@@ -42,3 +42,15 @@ export function courseCoverUpload() {
     }
   });
 }
+
+export function tutorDocumentUpload() {
+  return multer({
+    storage: makeStorage('tutor-documents'),
+    limits: { fileSize: parseInt(process.env.MAX_FILE_SIZE_MB || '10', 10) * 1024 * 1024 },
+    fileFilter: (req, file, cb) => {
+      const allowed = ['image/jpeg', 'image/png', 'application/pdf'];
+      if (allowed.includes(file.mimetype)) cb(null, true);
+      else cb(new Error('Only JPEG, PNG and PDF files are allowed'));
+    }
+  });
+}

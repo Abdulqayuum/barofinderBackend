@@ -123,24 +123,166 @@ router.delete('/users/:id/roles', wrap(async (req, res) => {
   res.json({ message: 'Roles removed' });
 }));
 
+router.delete('/users/:id', wrap(async (req, res) => {
+  const { id } = req.params;
+
+  // Transaction for complete cleanup
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    // 1. Delete tutor profile if any
+    await conn.query('DELETE FROM tutor_profiles WHERE user_id = ?', [id]);
+
+    // 2. Delete app roles
+    await conn.query('DELETE FROM user_roles WHERE user_id = ?', [id]);
+
+    // 3. Delete profile
+    await conn.query('DELETE FROM profiles WHERE user_id = ?', [id]);
+
+    // 4. Delete auth user
+    await conn.query('DELETE FROM users WHERE id = ?', [id]);
+
+    await conn.commit();
+    res.json({ message: 'User and all related data deleted successfully' });
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
+}));
+
 router.get('/tutors', wrap(async (_req, res) => {
   const [rows] = await db.query(
     `SELECT tp.*, p.full_name, p.email, p.city, p.status
      FROM tutor_profiles tp JOIN profiles p ON p.user_id = tp.user_id
      ORDER BY tp.created_at DESC`
   );
-  res.json(rows);
+
+  const parseJson = (val) => {
+    if (!val) return [];
+    if (typeof val === 'string') {
+      try { return JSON.parse(val); } catch { return []; }
+    }
+    return Array.isArray(val) ? val : [];
+  };
+
+  const tutors = rows.map((t) => ({
+    ...t,
+    subjects: parseJson(t.subjects),
+    levels: parseJson(t.levels),
+    languages: parseJson(t.languages),
+    service_areas: parseJson(t.service_areas),
+    availability: parseJson(t.availability),
+    packages: parseJson(t.packages),
+    verification_documents: parseJson(t.verification_documents),
+  }));
+
+  res.json(tutors);
 }));
 
 router.patch('/tutors/:id/verify', wrap(async (req, res) => {
   const { id } = req.params;
   const { verification_status, verified_badge } = req.body;
-  await db.query(
-    'UPDATE tutor_profiles SET verification_status = ?, verified_badge = ? WHERE id = ?',
-    [verification_status, !!verified_badge, id]
-  );
+
+  const [tRows] = await db.query('SELECT user_id, verification_documents FROM tutor_profiles WHERE id = ?', [id]);
+  const tutor = tRows[0];
+  if (!tutor) return res.status(404).json({ error: 'Tutor not found' });
+
+  const userId = tutor.user_id;
+
+  let grantBadge = false;
+  if (verification_status === 'verified') {
+    const raw = tutor.verification_documents;
+    let docs = [];
+    if (raw) {
+      try { docs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { docs = []; }
+    }
+
+    if (verified_badge !== undefined) {
+      grantBadge = verified_badge === true && Array.isArray(docs) && docs.length > 0;
+    } else {
+      grantBadge = Array.isArray(docs) && docs.length > 0;
+    }
+  }
+
+  if (verification_status === 'rejected') {
+    grantBadge = false;
+    await db.query(
+      'UPDATE tutor_profiles SET verification_status = ?, verified_badge = FALSE, verification_documents = NULL WHERE id = ?',
+      [verification_status, id]
+    );
+    await db.query(
+      `INSERT INTO notifications (user_id, type, title, message) VALUES (?, 'verification', 'Verification Rejected', 'Your uploaded documents were rejected. Please upload valid verification documents.')`,
+      [userId]
+    );
+  } else if (verification_status === 'suspended') {
+    grantBadge = false;
+    await db.query(
+      'UPDATE tutor_profiles SET verification_status = ?, verified_badge = FALSE WHERE id = ?',
+      [verification_status, id]
+    );
+    await db.query(
+      `INSERT INTO notifications (user_id, type, title, message) VALUES (?, 'verification', 'Account Suspended', 'Your tutor profile has been suspended by an administrator.')`,
+      [userId]
+    );
+  } else {
+    // verified or pending
+    await db.query(
+      'UPDATE tutor_profiles SET verification_status = ?, verified_badge = ? WHERE id = ?',
+      [verification_status, grantBadge, id]
+    );
+    if (verification_status === 'verified') {
+      const msg = grantBadge ? 'Your tutor profile has been verified and you received the Verified Badge!' : 'Your tutor profile has been verified. Upload documents to get the Verified Badge!';
+      await db.query(
+        `INSERT INTO notifications (user_id, type, title, message) VALUES (?, 'verification', 'Profile Verified', ?)`,
+        [userId, msg]
+      );
+    }
+  }
+
+  const [rows] = await db.query('SELECT * FROM tutor_profiles WHERE id = ?', [id]);
+  res.json({ ...rows[0], badge_granted: grantBadge });
+}));
+
+router.patch('/tutors/:id', wrap(async (req, res) => {
+  const { id } = req.params;
+  const updates = req.body;
+  const fields = [];
+  const values = [];
+
+  const jsonFields = new Set(['subjects', 'levels', 'languages', 'service_areas', 'availability', 'packages']);
+
+  for (const key of Object.keys(updates)) {
+    fields.push(`${key} = ?`);
+    const val = jsonFields.has(key) ? JSON.stringify(updates[key]) : updates[key];
+    values.push(val);
+  }
+
+  if (fields.length === 0) return res.json({ message: 'No changes' });
+
+  values.push(id);
+  await db.query(`UPDATE tutor_profiles SET ${fields.join(', ')} WHERE id = ?`, values);
   const [rows] = await db.query('SELECT * FROM tutor_profiles WHERE id = ?', [id]);
   res.json(rows[0]);
+}));
+
+router.delete('/tutors/:id', wrap(async (req, res) => {
+  const { id } = req.params;
+  const [rows] = await db.query('SELECT user_id FROM tutor_profiles WHERE id = ?', [id]);
+  const tutor = rows[0];
+  if (!tutor) return res.status(404).json({ error: 'Tutor not found' });
+
+  await db.query('DELETE FROM tutor_profiles WHERE id = ?', [id]);
+
+  // Demote profile role if it was specifically 'tutor'
+  await db.query("UPDATE profiles SET role = 'user' WHERE user_id = ? AND role = 'tutor'", [tutor.user_id]);
+
+  // Remove tutor role entry
+  await db.query("DELETE FROM user_roles WHERE user_id = ? AND role = 'tutor'", [tutor.user_id]);
+
+  res.json({ message: 'Tutor deleted' });
 }));
 
 router.get('/subscriptions', wrap(async (_req, res) => {
@@ -237,8 +379,8 @@ router.get('/messages', wrap(async (_req, res) => {
      (SELECT content FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1) AS last_message,
      (SELECT COUNT(*) FROM messages WHERE conversation_id = c.id) AS message_count
      FROM conversations c
-     JOIN profiles p1 ON p1.user_id = c.participant1_id
-     JOIN profiles p2 ON p2.user_id = c.participant2_id
+     JOIN profiles p1 ON p1.user_id = c.student_id
+     JOIN profiles p2 ON p2.user_id = c.tutor_id
      ORDER BY c.updated_at DESC`
   );
   res.json(rows);

@@ -239,7 +239,8 @@ router.post('/', authMiddleware, validateBody(upsertTutorSchema), wrap(async (re
     currency: data.currency || 'USD',
     availability: JSON.stringify(data.availability || []),
     packages: JSON.stringify(data.packages || []),
-    profile_photo_url: data.profile_photo_url || null
+    profile_photo_url: data.profile_photo_url || null,
+    verification_documents: data.verification_documents ? JSON.stringify(data.verification_documents) : null
   };
 
   if (existing) {
@@ -247,12 +248,12 @@ router.post('/', authMiddleware, validateBody(upsertTutorSchema), wrap(async (re
       `UPDATE tutor_profiles SET
         bio = ?, education = ?, teaching_style = ?, experience_years = ?, gender = ?, subjects = ?,
         levels = ?, languages = ?, service_areas = ?, online_available = ?, offline_available = ?,
-        online_hourly = ?, offline_hourly = ?, currency = ?, availability = ?, packages = ?, profile_photo_url = ?
+        online_hourly = ?, offline_hourly = ?, currency = ?, availability = ?, packages = ?, profile_photo_url = ?, verification_documents = ?
        WHERE user_id = ?`,
       [
         payload.bio, payload.education, payload.teaching_style, payload.experience_years, payload.gender, payload.subjects,
         payload.levels, payload.languages, payload.service_areas, payload.online_available, payload.offline_available,
-        payload.online_hourly, payload.offline_hourly, payload.currency, payload.availability, payload.packages, payload.profile_photo_url,
+        payload.online_hourly, payload.offline_hourly, payload.currency, payload.availability, payload.packages, payload.profile_photo_url, payload.verification_documents,
         req.user.id
       ]
     );
@@ -260,8 +261,8 @@ router.post('/', authMiddleware, validateBody(upsertTutorSchema), wrap(async (re
     await db.query(
       `INSERT INTO tutor_profiles
        (user_id, bio, education, teaching_style, experience_years, gender, subjects, levels, languages, service_areas,
-        online_available, offline_available, online_hourly, offline_hourly, currency, availability, packages, profile_photo_url, verification_status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+        online_available, offline_available, online_hourly, offline_hourly, currency, availability, packages, profile_photo_url, verification_documents, verification_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
       [
         req.user.id,
         payload.bio,
@@ -280,7 +281,8 @@ router.post('/', authMiddleware, validateBody(upsertTutorSchema), wrap(async (re
         payload.currency,
         payload.availability,
         payload.packages,
-        payload.profile_photo_url
+        payload.profile_photo_url,
+        payload.verification_documents
       ]
     );
   }
