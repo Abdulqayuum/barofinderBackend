@@ -7,7 +7,21 @@ export const signupSchema = z.object({
   phone: z.string().optional(),
   city: z.string().optional(),
   role: z.enum(['student', 'tutor', 'parent']).optional(),
-  is_parent: z.boolean().optional()
+  is_parent: z.boolean().optional(),
+  otp: z.string().length(6).optional()
+});
+
+export const requestOtpSchema = z.object({
+  email: z.string().email()
+});
+
+export const verifyEmailSchema = z.object({
+  email: z.string().email(),
+  otp: z.string().length(6)
+});
+
+export const resendVerifySchema = z.object({
+  email: z.string().email()
 });
 
 export const loginSchema = z.object({

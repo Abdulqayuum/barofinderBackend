@@ -5,8 +5,9 @@ import { v4 as uuid } from 'uuid';
 import db from '../config/database.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { validateBody } from '../middleware/validation.js';
-import { loginSchema, refreshSchema, resetPasswordSchema, signupSchema, updatePasswordSchema } from '../schemas/auth.schema.js';
+import { loginSchema, refreshSchema, resetPasswordSchema, signupSchema, updatePasswordSchema, requestOtpSchema } from '../schemas/auth.schema.js';
 import { wrap } from '../middleware/error-handler.js';
+import { sendOTP } from '../utils/mailer.js';
 
 const router = Router();
 
@@ -32,6 +33,30 @@ async function verifyPassword(inputPassword, storedPasswordHash) {
   return bcrypt.compare(inputPassword, storedPasswordHash);
 }
 
+router.post('/request-signup-otp', validateBody(requestOtpSchema), wrap(async (req, res) => {
+  const { email } = req.body;
+  const [existing] = await db.query('SELECT id FROM users WHERE email = ?', [email]);
+  if (existing.length > 0) {
+    return res.status(409).json({ error: 'Email already registered', code: 'CONFLICT' });
+  }
+
+  if (!EMAIL_VERIFICATION_REQUIRED) {
+    return res.json({ message: 'No verification required' });
+  }
+
+  const otp = Math.floor(100000 + Math.random() * 900000).toString();
+  const tokenExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+  await db.query(`
+    INSERT INTO otp_codes (email, otp, expires_at) VALUES (?, ?, ?)
+    ON DUPLICATE KEY UPDATE otp = VALUES(otp), expires_at = VALUES(expires_at)
+  `, [email, otp, tokenExpires]);
+
+  await sendOTP(email, otp).catch(console.error);
+
+  res.json({ message: 'A verification code was sent.' });
+}));
+
 router.post('/signup', validateBody(signupSchema), wrap(async (req, res) => {
   const data = req.body;
 
@@ -40,17 +65,26 @@ router.post('/signup', validateBody(signupSchema), wrap(async (req, res) => {
     return res.status(409).json({ error: 'Email already registered', code: 'CONFLICT' });
   }
 
+  if (EMAIL_VERIFICATION_REQUIRED) {
+    if (!data.otp) {
+      return res.status(400).json({ error: 'Verification code is required', code: 'BAD_REQUEST' });
+    }
+    const [otpRows] = await db.query('SELECT otp FROM otp_codes WHERE email = ? AND otp = ? AND expires_at > NOW()', [data.email, data.otp]);
+    if (otpRows.length === 0) {
+      return res.status(400).json({ error: 'Invalid or expired verification code', code: 'BAD_REQUEST' });
+    }
+  }
+
   const passwordHash = await bcrypt.hash(data.password, BCRYPT_SALT_ROUNDS);
   const userId = uuid();
-  const emailVerified = !EMAIL_VERIFICATION_REQUIRED;
-  const verificationToken = EMAIL_VERIFICATION_REQUIRED ? uuid() : null;
+  const emailVerified = true;
 
   const conn = await db.getConnection();
   try {
     await conn.beginTransaction();
     await conn.query(
-      'INSERT INTO users (id, email, password_hash, email_verified, verification_token) VALUES (?, ?, ?, ?, ?)',
-      [userId, data.email, passwordHash, emailVerified, verificationToken]
+      'INSERT INTO users (id, email, password_hash, email_verified) VALUES (?, ?, ?, ?)',
+      [userId, data.email, passwordHash, emailVerified]
     );
 
     await conn.query(
@@ -77,6 +111,9 @@ router.post('/signup', validateBody(signupSchema), wrap(async (req, res) => {
       [userId, 'user.signup', 'user', userId, JSON.stringify({ email: data.email }), req.ip || null]
     );
 
+    if (EMAIL_VERIFICATION_REQUIRED) {
+      await conn.query('DELETE FROM otp_codes WHERE email = ?', [data.email]);
+    }
     await conn.commit();
   } catch (err) {
     await conn.rollback();
