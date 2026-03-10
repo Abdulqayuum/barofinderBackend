@@ -26,15 +26,37 @@ import uploadRoutes from './routes/upload.routes.js';
 const app = express();
 const server = http.createServer(app);
 
-const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:5173,http://localhost:8080')
+const defaultAllowedOrigins = [
+  'http://localhost:5173',
+  'http://localhost:8080',
+  'https://qalintech.shop',
+  'https://coin.qalintech.shop',
+];
+
+const envAllowedOrigins = (process.env.CORS_ORIGIN || '')
   .split(',')
   .map((o) => o.trim())
   .filter(Boolean);
 
+const allowedOrigins = Array.from(new Set([...defaultAllowedOrigins, ...envAllowedOrigins]));
+
+function isAllowedOrigin(origin) {
+  if (!origin) return true;
+  if (allowedOrigins.includes(origin)) return true;
+
+  // Allow local dev frontends from any localhost port.
+  try {
+    const parsed = new URL(origin);
+    return parsed.protocol === 'http:' && parsed.hostname === 'localhost';
+  } catch {
+    return false;
+  }
+}
+
 const corsOptions = {
   origin(origin, callback) {
     // Allow non-browser clients (no Origin header) and configured browser origins.
-    if (!origin || allowedOrigins.includes(origin)) {
+    if (isAllowedOrigin(origin)) {
       callback(null, true);
       return;
     }
@@ -47,6 +69,7 @@ app.use(helmet({
   crossOriginResourcePolicy: false,
 }));
 app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 app.use(express.json({ limit: '1mb' }));
 app.use('/uploads', express.static('uploads'));
 app.use('/api', apiRateLimiter);
