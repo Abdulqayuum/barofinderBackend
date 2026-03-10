@@ -25,6 +25,15 @@ router.post('/tutors/:id/reviews', authMiddleware, validateBody(tutorReviewCreat
   const { id } = req.params;
   const data = req.body;
 
+  const [tutorRows] = await db.query('SELECT user_id FROM tutor_profiles WHERE id = ?', [id]);
+  const tutor = tutorRows[0];
+  if (!tutor) {
+    return res.status(404).json({ error: 'Tutor not found', code: 'NOT_FOUND' });
+  }
+  if (tutor.user_id === req.user.id) {
+    return res.status(403).json({ error: 'You cannot review yourself', code: 'FORBIDDEN' });
+  }
+
   const [existing] = await db.query('SELECT id FROM reviews WHERE tutor_id = ? AND student_id = ?', [id, req.user.id]);
   if (existing.length > 0) {
     return res.status(409).json({ error: 'Review already exists', code: 'CONFLICT' });
