@@ -20,11 +20,28 @@ export const APP_SETTINGS_CATALOG = [
   { key: 'allow_tutor_registration', defaultValue: 'true', isPublic: true },
   { key: 'allow_course_creation', defaultValue: 'true', isPublic: true },
   { key: 'allow_course_enrollment', defaultValue: 'true', isPublic: true },
+  { key: 'courses_visibility', defaultValue: 'public', isPublic: true },
+  { key: 'tutor_jobs_visibility', defaultValue: 'public_except_students', isPublic: true },
   { key: 'max_file_upload_mb', defaultValue: '5', isPublic: true },
   { key: 'max_course_asset_size_mb', defaultValue: '100', isPublic: true },
   { key: 'admin_signature_name', defaultValue: 'Platform Administrator', isPublic: true },
   { key: 'certificate_footer_text', defaultValue: 'Issued by BaroFinder Learning Platform', isPublic: true },
 ];
+
+const CONTENT_VISIBILITY_VALUES = new Set([
+  'public',
+  'signed_in',
+  'public_except_students',
+  'signed_in_except_students',
+  'students',
+  'parents',
+  'tutors',
+  'institutions',
+  'admins',
+  'students_parents',
+  'tutors_institutions',
+  'hidden',
+]);
 
 const APP_SETTINGS_BY_KEY = new Map(APP_SETTINGS_CATALOG.map((setting) => [setting.key, setting]));
 const PUBLIC_APP_SETTING_KEYS = new Set(
@@ -61,6 +78,83 @@ export function parseBooleanAppSettingValue(value, fallback = false) {
 export function parseNumberAppSettingValue(value, fallback = 0) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+export function normalizeContentVisibilityValue(value, fallback = 'public') {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  return CONTENT_VISIBILITY_VALUES.has(normalized) ? normalized : fallback;
+}
+
+export function contentVisibilityRequiresAuth(value) {
+  const visibility = normalizeContentVisibilityValue(value);
+
+  return !['public', 'public_except_students', 'hidden'].includes(visibility);
+}
+
+export function canAccessContentVisibility(value, viewer = {}) {
+  const visibility = normalizeContentVisibilityValue(value);
+  const role = typeof viewer.role === 'string' ? viewer.role.trim().toLowerCase() : null;
+  const isAuthenticated = Boolean(viewer.isAuthenticated || role);
+  const isAdmin = role === 'admin';
+  const isParent = role === 'parent' || viewer.is_parent === true;
+  const isStudent = role === 'student' && !isParent;
+  const isTutor = role === 'tutor';
+  const isInstitution = role === 'institution';
+
+  if (isAdmin) {
+    return true;
+  }
+
+  switch (visibility) {
+    case 'public':
+      return true;
+    case 'signed_in':
+      return isAuthenticated;
+    case 'public_except_students':
+      return !isStudent;
+    case 'signed_in_except_students':
+      return isAuthenticated && !isStudent;
+    case 'students':
+      return isStudent;
+    case 'parents':
+      return isParent;
+    case 'tutors':
+      return isTutor;
+    case 'institutions':
+      return isInstitution;
+    case 'admins':
+      return false;
+    case 'students_parents':
+      return isStudent || isParent;
+    case 'tutors_institutions':
+      return isTutor || isInstitution;
+    case 'hidden':
+      return false;
+    default:
+      return true;
+  }
+}
+
+export async function loadAppSettingViewerAccess(userId) {
+  if (!userId) {
+    return {
+      isAuthenticated: false,
+      role: null,
+      is_parent: false,
+    };
+  }
+
+  const [rows] = await db.query(
+    'SELECT role, is_parent FROM profiles WHERE user_id = ? LIMIT 1',
+    [userId],
+  );
+  const profile = rows[0] || null;
+
+  return {
+    isAuthenticated: true,
+    role: typeof profile?.role === 'string' ? profile.role.toLowerCase() : null,
+    is_parent: Boolean(profile?.is_parent),
+  };
 }
 
 export async function ensureDefaultAppSettings() {
@@ -159,5 +253,22 @@ export async function assertAppSettingEnabled(key, message) {
   const err = new Error(message || 'This feature is currently disabled.');
   err.status = 403;
   err.code = 'FORBIDDEN';
+  throw err;
+}
+
+export async function assertAppSettingVisibilityAllowed(key, userId, options = {}) {
+  const fallback = normalizeContentVisibilityValue(options.fallback, 'public');
+  const visibility = normalizeContentVisibilityValue(await getAppSettingValue(key, fallback), fallback);
+  const viewer = await loadAppSettingViewerAccess(userId);
+
+  if (canAccessContentVisibility(visibility, viewer)) {
+    return { visibility, viewer };
+  }
+
+  const requiresAuth = contentVisibilityRequiresAuth(visibility);
+  const err = new Error(options.message || 'This content is not available for your account.');
+  err.status = !viewer.isAuthenticated && requiresAuth ? 401 : 403;
+  err.code = !viewer.isAuthenticated && requiresAuth ? 'UNAUTHORIZED' : 'FORBIDDEN';
+  err.meta = { key, visibility };
   throw err;
 }

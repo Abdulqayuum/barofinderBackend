@@ -1,12 +1,16 @@
 import { Router } from 'express';
 import { v4 as uuid } from 'uuid';
 import db from '../config/database.js';
-import { authMiddleware } from '../middleware/auth.js';
+import { authMiddleware, optionalAuth } from '../middleware/auth.js';
 import { validateBody } from '../middleware/validation.js';
 import { institutionJobSchema, upsertInstitutionSchema } from '../schemas/institution.schema.js';
 import { getPagination } from '../utils/pagination.js';
 import { wrap } from '../middleware/error-handler.js';
-import { assertPlatformWritable, getAppSettingValue } from '../utils/app-settings.js';
+import {
+  assertAppSettingVisibilityAllowed,
+  assertPlatformWritable,
+  getAppSettingValue,
+} from '../utils/app-settings.js';
 
 const router = Router();
 const INSTITUTION_APPROVAL_STATUSES = new Set(['pending', 'approved', 'rejected', 'suspended']);
@@ -211,7 +215,12 @@ function buildInstitutionJobFilters(query) {
   return { filters, params };
 }
 
-router.get('/jobs', wrap(async (req, res) => {
+router.get('/jobs', optionalAuth, wrap(async (req, res) => {
+  await assertAppSettingVisibilityAllowed('tutor_jobs_visibility', req.user?.id, {
+    fallback: 'public_except_students',
+    message: 'Tutor jobs are not available for your account.',
+  });
+
   const { page, limit, offset } = getPagination(req.query);
   const { filters, params } = buildInstitutionJobFilters(req.query);
   const where = filters.join(' AND ');

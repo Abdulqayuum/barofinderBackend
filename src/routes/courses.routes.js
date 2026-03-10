@@ -1,13 +1,18 @@
 import { Router } from 'express';
 import { v4 as uuid } from 'uuid';
 import db from '../config/database.js';
-import { authMiddleware } from '../middleware/auth.js';
+import { authMiddleware, optionalAuth } from '../middleware/auth.js';
 import { validateBody } from '../middleware/validation.js';
 import { courseCreateSchema, courseUpdateSchema } from '../schemas/course.schema.js';
 import { getPagination } from '../utils/pagination.js';
 import { wrap } from '../middleware/error-handler.js';
 import { toPublicUploadUrl, toStoredUploadPath } from '../utils/uploads.js';
-import { assertAppSettingEnabled, assertPlatformWritable, getAppSettingValue } from '../utils/app-settings.js';
+import {
+  assertAppSettingEnabled,
+  assertAppSettingVisibilityAllowed,
+  assertPlatformWritable,
+  getAppSettingValue,
+} from '../utils/app-settings.js';
 
 const router = Router();
 
@@ -63,7 +68,12 @@ function toCourseResponse(course) {
   };
 }
 
-router.get('/', wrap(async (req, res) => {
+router.get('/', optionalAuth, wrap(async (req, res) => {
+  await assertAppSettingVisibilityAllowed('courses_visibility', req.user?.id, {
+    fallback: 'public',
+    message: 'Courses are not available for your account.',
+  });
+
   const { page, limit, offset } = getPagination(req.query);
   const filters = ['c.is_published = TRUE'];
   const params = [];
@@ -119,7 +129,12 @@ router.get('/my-courses', authMiddleware, wrap(async (req, res) => {
   res.json(rows.map(toCourseResponse));
 }));
 
-router.get('/:id', wrap(async (req, res) => {
+router.get('/:id', optionalAuth, wrap(async (req, res) => {
+  await assertAppSettingVisibilityAllowed('courses_visibility', req.user?.id, {
+    fallback: 'public',
+    message: 'Courses are not available for your account.',
+  });
+
   const { id } = req.params;
   const [rows] = await db.query('SELECT * FROM courses WHERE id = ?', [id]);
   const course = rows[0];
