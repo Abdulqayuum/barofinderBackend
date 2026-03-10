@@ -5,6 +5,7 @@ import { requireRole } from '../middleware/roles.js';
 import { wrap } from '../middleware/error-handler.js';
 import { v4 as uuid } from 'uuid';
 import { toPublicUploadDocuments, toPublicUploadUrl, toStoredUploadDocuments, toStoredUploadPath } from '../utils/uploads.js';
+import { listAppSettings, serializeAppSettingValue } from '../utils/app-settings.js';
 
 const router = Router();
 
@@ -669,31 +670,44 @@ router.delete('/subscription-plans/:id', wrap(async (req, res) => {
 }));
 
 router.get('/settings', wrap(async (_req, res) => {
-  const [rows] = await db.query('SELECT * FROM app_settings');
-  res.json(rows);
+  res.json(await listAppSettings());
 }));
 
 router.post('/settings', wrap(async (req, res) => {
   const id = uuid();
-  const data = req.body;
-  await db.query('INSERT INTO app_settings (id, `key`, value) VALUES (?, ?, ?)', [id, data.key, data.value || null]);
+  const key = String(req.body?.key || '').trim().toLowerCase();
+  if (!/^[a-z0-9_]+$/.test(key)) {
+    return res.status(400).json({ error: 'Setting key must use lowercase letters, numbers, and underscores only', code: 'VALIDATION_ERROR' });
+  }
+
+  const [existingRows] = await db.query('SELECT id FROM app_settings WHERE `key` = ? LIMIT 1', [key]);
+  if (existingRows[0]) {
+    return res.status(409).json({ error: 'A setting with this key already exists', code: 'CONFLICT' });
+  }
+
+  await db.query('INSERT INTO app_settings (id, `key`, value) VALUES (?, ?, ?)', [
+    id,
+    key,
+    serializeAppSettingValue(req.body?.value),
+  ]);
   const [rows] = await db.query('SELECT * FROM app_settings WHERE id = ?', [id]);
   res.status(201).json(rows[0]);
 }));
 
 router.patch('/settings/:id', wrap(async (req, res) => {
   const { id } = req.params;
-  const updates = req.body;
-  const fields = [];
-  const values = [];
-  for (const key of Object.keys(updates)) {
-    fields.push(`\`${key}\` = ?`);
-    values.push(updates[key]);
+  if (!Object.prototype.hasOwnProperty.call(req.body || {}, 'value')) {
+    return res.status(400).json({ error: 'A value is required', code: 'VALIDATION_ERROR' });
   }
-  if (fields.length === 0) return res.json({ message: 'No changes' });
-  values.push(id);
-  await db.query(`UPDATE app_settings SET ${fields.join(', ')} WHERE id = ?`, values);
+
+  await db.query('UPDATE app_settings SET value = ? WHERE id = ?', [
+    serializeAppSettingValue(req.body?.value),
+    id,
+  ]);
   const [rows] = await db.query('SELECT * FROM app_settings WHERE id = ?', [id]);
+  if (!rows[0]) {
+    return res.status(404).json({ error: 'Setting not found', code: 'NOT_FOUND' });
+  }
   res.json(rows[0]);
 }));
 

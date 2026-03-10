@@ -7,6 +7,7 @@ import { courseCreateSchema, courseUpdateSchema } from '../schemas/course.schema
 import { getPagination } from '../utils/pagination.js';
 import { wrap } from '../middleware/error-handler.js';
 import { toPublicUploadUrl, toStoredUploadPath } from '../utils/uploads.js';
+import { assertAppSettingEnabled, assertPlatformWritable, getAppSettingValue } from '../utils/app-settings.js';
 
 const router = Router();
 
@@ -153,12 +154,16 @@ router.get('/:id', wrap(async (req, res) => {
 }));
 
 router.post('/', authMiddleware, validateBody(courseCreateSchema), wrap(async (req, res) => {
+  await assertPlatformWritable();
+  await assertAppSettingEnabled('allow_course_creation', 'Course creation is currently disabled.');
+
   const normalized = normalizeCoursePayload(req.body);
   if (normalized.error) {
     return res.status(400).json({ error: normalized.error, code: 'VALIDATION_ERROR' });
   }
 
   const data = normalized.payload;
+  const defaultCurrency = await getAppSettingValue('currency_default', 'USD');
   const [tutorRows] = await db.query('SELECT id FROM tutor_profiles WHERE user_id = ?', [req.user.id]);
   const tutor = tutorRows[0];
   if (!tutor) return res.status(403).json({ error: 'Tutor profile required', code: 'FORBIDDEN' });
@@ -176,7 +181,7 @@ router.post('/', authMiddleware, validateBody(courseCreateSchema), wrap(async (r
       data.subject || null,
       data.pricing_type,
       data.price,
-      data.currency || 'USD',
+      data.currency || defaultCurrency,
       data.max_students || 20,
       toStoredUploadPath(data.cover_image_url),
       data.is_published || false,

@@ -6,6 +6,7 @@ import { upsertTutorSchema } from '../schemas/tutor.schema.js';
 import { getPagination } from '../utils/pagination.js';
 import { wrap } from '../middleware/error-handler.js';
 import { toPublicUploadDocuments, toPublicUploadUrl, toStoredUploadDocuments, toStoredUploadPath } from '../utils/uploads.js';
+import { assertAppSettingEnabled, assertPlatformWritable, getAppSettingValue } from '../utils/app-settings.js';
 
 const router = Router();
 
@@ -238,9 +239,13 @@ router.get('/:id', wrap(async (req, res) => {
 }));
 
 router.post('/', authMiddleware, validateBody(upsertTutorSchema), wrap(async (req, res) => {
+  await assertPlatformWritable();
+  await assertAppSettingEnabled('allow_tutor_registration', 'Tutor registration is currently disabled.');
+
   const data = req.body;
   const [rows] = await db.query('SELECT id FROM tutor_profiles WHERE user_id = ?', [req.user.id]);
   const existing = rows[0];
+  const defaultCurrency = await getAppSettingValue('currency_default', 'USD');
 
   const payload = {
     bio: data.bio,
@@ -256,7 +261,7 @@ router.post('/', authMiddleware, validateBody(upsertTutorSchema), wrap(async (re
     offline_available: data.offline_available !== undefined ? data.offline_available : false,
     online_hourly: data.online_hourly || 0,
     offline_hourly: data.offline_hourly ?? null,
-    currency: data.currency || 'USD',
+    currency: data.currency || defaultCurrency,
     availability: JSON.stringify(data.availability || []),
     packages: JSON.stringify(data.packages || []),
     profile_photo_url: toStoredUploadPath(data.profile_photo_url),

@@ -6,10 +6,14 @@ import { validateBody } from '../middleware/validation.js';
 import { enrollmentCreateSchema, enrollmentUpdateSchema } from '../schemas/enrollment.schema.js';
 import { wrap } from '../middleware/error-handler.js';
 import { toPublicUploadUrl } from '../utils/uploads.js';
+import { assertAppSettingEnabled, assertPlatformWritable } from '../utils/app-settings.js';
 
 const router = Router();
 
 router.post('/courses/:id/enroll', authMiddleware, validateBody(enrollmentCreateSchema), wrap(async (req, res) => {
+  await assertPlatformWritable();
+  await assertAppSettingEnabled('allow_course_enrollment', 'Course enrollments are currently disabled.');
+
   const { id } = req.params;
   const data = req.body;
 

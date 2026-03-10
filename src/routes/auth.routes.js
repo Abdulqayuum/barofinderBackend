@@ -10,6 +10,7 @@ import { loginSchema, refreshSchema, resetPasswordSchema, signupSchema, updatePa
 import { wrap } from '../middleware/error-handler.js';
 import { sendOTP } from '../utils/mailer.js';
 import { toPublicUploadUrl } from '../utils/uploads.js';
+import { assertAppSettingEnabled, assertPlatformWritable } from '../utils/app-settings.js';
 
 const router = Router();
 
@@ -44,6 +45,9 @@ async function verifyPassword(inputPassword, storedPasswordHash) {
 }
 
 router.post('/request-signup-otp', authRateLimiter, validateBody(requestOtpSchema), wrap(async (req, res) => {
+  await assertPlatformWritable();
+  await assertAppSettingEnabled('allow_new_registrations', 'New registrations are currently disabled.');
+
   const { email } = req.body;
   const [existing] = await db.query('SELECT id FROM users WHERE email = ?', [email]);
   if (existing.length > 0) {
@@ -68,6 +72,9 @@ router.post('/request-signup-otp', authRateLimiter, validateBody(requestOtpSchem
 }));
 
 router.post('/signup', authRateLimiter, validateBody(signupSchema), wrap(async (req, res) => {
+  await assertPlatformWritable();
+  await assertAppSettingEnabled('allow_new_registrations', 'New registrations are currently disabled.');
+
   const data = req.body;
 
   const [existing] = await db.query('SELECT id FROM users WHERE email = ?', [data.email]);

@@ -21,10 +21,10 @@ function makeStorage(subdir) {
   });
 }
 
-export function tutorPhotoUpload() {
+export function tutorPhotoUpload(fileSizeMb) {
   return multer({
     storage: makeStorage('tutor-photos'),
-    limits: { fileSize: parseInt(process.env.MAX_FILE_SIZE_MB || '5', 10) * 1024 * 1024 },
+    limits: { fileSize: parseInt(String(fileSizeMb ?? process.env.MAX_FILE_SIZE_MB ?? '5'), 10) * 1024 * 1024 },
     fileFilter: (req, file, cb) => {
       if (file.mimetype.startsWith('image/')) cb(null, true);
       else cb(new Error('Only image files allowed'));
@@ -32,10 +32,10 @@ export function tutorPhotoUpload() {
   });
 }
 
-export function courseCoverUpload() {
+export function courseCoverUpload(fileSizeMb) {
   return multer({
     storage: makeStorage('course-covers'),
-    limits: { fileSize: parseInt(process.env.MAX_FILE_SIZE_MB || '5', 10) * 1024 * 1024 },
+    limits: { fileSize: parseInt(String(fileSizeMb ?? process.env.MAX_FILE_SIZE_MB ?? '5'), 10) * 1024 * 1024 },
     fileFilter: (req, file, cb) => {
       if (file.mimetype.startsWith('image/')) cb(null, true);
       else cb(new Error('Only image files allowed'));
@@ -43,10 +43,21 @@ export function courseCoverUpload() {
   });
 }
 
-export function courseAssetUpload() {
+export function siteLogoUpload(fileSizeMb) {
+  return multer({
+    storage: makeStorage('site-branding'),
+    limits: { fileSize: parseInt(String(fileSizeMb ?? process.env.MAX_FILE_SIZE_MB ?? '5'), 10) * 1024 * 1024 },
+    fileFilter: (req, file, cb) => {
+      if (file.mimetype.startsWith('image/')) cb(null, true);
+      else cb(new Error('Only image files allowed'));
+    }
+  });
+}
+
+export function courseAssetUpload(fileSizeMb) {
   return multer({
     storage: makeStorage('course-assets'),
-    limits: { fileSize: parseInt(process.env.MAX_COURSE_ASSET_SIZE_MB || '100', 10) * 1024 * 1024 },
+    limits: { fileSize: parseInt(String(fileSizeMb ?? process.env.MAX_COURSE_ASSET_SIZE_MB ?? '100'), 10) * 1024 * 1024 },
     fileFilter: (req, file, cb) => {
       if (file.mimetype === 'application/pdf' || file.mimetype.startsWith('video/')) cb(null, true);
       else cb(new Error('Only video files and PDF documents are allowed'));
@@ -54,10 +65,10 @@ export function courseAssetUpload() {
   });
 }
 
-export function tutorDocumentUpload() {
+export function tutorDocumentUpload(fileSizeMb) {
   return multer({
     storage: makeStorage('tutor-documents'),
-    limits: { fileSize: parseInt(process.env.MAX_FILE_SIZE_MB || '10', 10) * 1024 * 1024 },
+    limits: { fileSize: parseInt(String(fileSizeMb ?? process.env.MAX_FILE_SIZE_MB ?? '10'), 10) * 1024 * 1024 },
     fileFilter: (req, file, cb) => {
       const allowed = ['image/jpeg', 'image/png', 'application/pdf'];
       if (allowed.includes(file.mimetype)) cb(null, true);

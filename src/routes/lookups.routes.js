@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import db from '../config/database.js';
 import { wrap } from '../middleware/error-handler.js';
+import { listPublicAppSettings } from '../utils/app-settings.js';
 
 const router = Router();
 
@@ -30,8 +31,7 @@ router.get('/payment-methods', wrap(async (_req, res) => {
 }));
 
 router.get('/app-settings', wrap(async (_req, res) => {
-  const [rows] = await db.query('SELECT `key`, value FROM app_settings');
-  res.json(rows);
+  res.json(await listPublicAppSettings());
 }));
 
 router.get('/notices', wrap(async (req, res) => {
