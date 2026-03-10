@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { v4 as uuid } from 'uuid';
 import db from '../config/database.js';
-import { authMiddleware, optionalAuth } from '../middleware/auth.js';
+import { authMiddleware } from '../middleware/auth.js';
 import { validateBody } from '../middleware/validation.js';
 import { institutionJobSchema, upsertInstitutionSchema } from '../schemas/institution.schema.js';
 import { getPagination } from '../utils/pagination.js';
@@ -215,7 +215,7 @@ function buildInstitutionJobFilters(query) {
   return { filters, params };
 }
 
-router.get('/jobs', optionalAuth, wrap(async (req, res) => {
+router.get('/jobs', authMiddleware, wrap(async (req, res) => {
   await assertAppSettingVisibilityAllowed('tutor_jobs_visibility', req.user?.id, {
     fallback: 'public_except_students',
     message: 'Tutor jobs are not available for your account.',
