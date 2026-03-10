@@ -139,6 +139,15 @@ function toAdminInstitutionResponse(institution) {
   };
 }
 
+function toAdminAdResponse(ad) {
+  if (!ad) return null;
+
+  return {
+    ...ad,
+    image_url: toPublicUploadUrl(ad.image_url),
+  };
+}
+
 async function loadAdminUserById(userId, executor = db) {
   const [rows] = await executor.query(
     `SELECT p.*, u.email_verified, u.created_at AS user_created_at
@@ -1704,7 +1713,7 @@ router.delete('/notices/:id', wrap(async (req, res) => {
 
 router.get('/ads', wrap(async (_req, res) => {
   const [rows] = await db.query('SELECT * FROM ads ORDER BY sort_order ASC');
-  res.json(rows);
+  res.json(rows.map((row) => toAdminAdResponse(row)));
 }));
 
 router.post('/ads', wrap(async (req, res) => {
@@ -1713,10 +1722,10 @@ router.post('/ads', wrap(async (req, res) => {
   await db.query(
     `INSERT INTO ads (id, company_name, description, image_url, image_width, image_height, link_url, placement, is_active, sort_order, start_date, end_date)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [id, data.company_name, data.description || null, data.image_url || null, data.image_width || null, data.image_height || null, data.link_url || null, data.placement || 'card', data.is_active ?? true, data.sort_order ?? 0, data.start_date || null, data.end_date || null]
+    [id, data.company_name, data.description || null, toStoredUploadPath(data.image_url), data.image_width || null, data.image_height || null, data.link_url || null, data.placement || 'card', data.is_active ?? true, data.sort_order ?? 0, data.start_date || null, data.end_date || null]
   );
   const [rows] = await db.query('SELECT * FROM ads WHERE id = ?', [id]);
-  res.status(201).json(rows[0]);
+  res.status(201).json(toAdminAdResponse(rows[0]));
 }));
 
 router.patch('/ads/:id', wrap(async (req, res) => {
@@ -1726,13 +1735,13 @@ router.patch('/ads/:id', wrap(async (req, res) => {
   const values = [];
   for (const key of Object.keys(updates)) {
     fields.push(`${key} = ?`);
-    values.push(updates[key]);
+    values.push(key === 'image_url' ? toStoredUploadPath(updates[key]) : updates[key]);
   }
   if (fields.length === 0) return res.json({ message: 'No changes' });
   values.push(id);
   await db.query(`UPDATE ads SET ${fields.join(', ')} WHERE id = ?`, values);
   const [rows] = await db.query('SELECT * FROM ads WHERE id = ?', [id]);
-  res.json(rows[0]);
+  res.json(toAdminAdResponse(rows[0]));
 }));
 
 router.delete('/ads/:id', wrap(async (req, res) => {

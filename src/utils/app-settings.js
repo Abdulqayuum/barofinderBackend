@@ -1,5 +1,6 @@
 import { v4 as uuid } from 'uuid';
 import db from '../config/database.js';
+import { toPublicUploadUrl } from './uploads.js';
 
 export const APP_SETTINGS_CATALOG = [
   { key: 'site_name', defaultValue: 'BaroFinder', isPublic: true },
@@ -29,6 +30,19 @@ const APP_SETTINGS_BY_KEY = new Map(APP_SETTINGS_CATALOG.map((setting) => [setti
 const PUBLIC_APP_SETTING_KEYS = new Set(
   APP_SETTINGS_CATALOG.filter((setting) => setting.isPublic).map((setting) => setting.key),
 );
+
+function toPublicAppSettingRow(row) {
+  if (!row) return row;
+
+  if (row.key === 'site_logo_url') {
+    return {
+      ...row,
+      value: toPublicUploadUrl(row.value),
+    };
+  }
+
+  return row;
+}
 
 export function serializeAppSettingValue(value) {
   if (typeof value === 'boolean') return value ? 'true' : 'false';
@@ -68,14 +82,17 @@ export async function ensureDefaultAppSettings() {
 export async function listAppSettings() {
   await ensureDefaultAppSettings();
   const [rows] = await db.query('SELECT * FROM app_settings ORDER BY `key` ASC');
-  return rows;
+  return rows.map((row) => toPublicAppSettingRow(row));
 }
 
 export async function listPublicAppSettings() {
   const rows = await listAppSettings();
   return rows
     .filter((row) => PUBLIC_APP_SETTING_KEYS.has(row.key))
-    .map((row) => ({ key: row.key, value: row.value }));
+    .map((row) => {
+      const normalized = toPublicAppSettingRow(row);
+      return { key: normalized.key, value: normalized.value };
+    });
 }
 
 export async function getAppSettingValue(key, fallback = '') {

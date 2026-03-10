@@ -2,8 +2,18 @@ import { Router } from 'express';
 import db from '../config/database.js';
 import { wrap } from '../middleware/error-handler.js';
 import { listPublicAppSettings } from '../utils/app-settings.js';
+import { toPublicUploadUrl } from '../utils/uploads.js';
 
 const router = Router();
+
+function toPublicAdResponse(ad) {
+  if (!ad) return ad;
+
+  return {
+    ...ad,
+    image_url: toPublicUploadUrl(ad.image_url),
+  };
+}
 
 router.get('/cities', wrap(async (_req, res) => {
   const [rows] = await db.query('SELECT * FROM cities ORDER BY name ASC');
@@ -70,7 +80,7 @@ router.get('/ads', wrap(async (req, res) => {
 
   query += ' ORDER BY sort_order ASC, created_at DESC';
   const [rows] = await db.query(query, params);
-  res.json(rows);
+  res.json(rows.map((row) => toPublicAdResponse(row)));
 }));
 
 export default router;
