@@ -1,0 +1,53 @@
+CREATE TABLE IF NOT EXISTS institution_profiles (
+  id                   CHAR(36)     PRIMARY KEY DEFAULT (UUID()),
+  user_id              CHAR(36)     NOT NULL UNIQUE,
+  institution_name     VARCHAR(255) NOT NULL,
+  institution_type     VARCHAR(30)  NOT NULL DEFAULT 'school',
+  description          TEXT         DEFAULT NULL,
+  website_url          TEXT         DEFAULT NULL,
+  address              TEXT         DEFAULT NULL,
+  city                 VARCHAR(100) DEFAULT NULL,
+  contact_person_name  VARCHAR(255) DEFAULT NULL,
+  contact_person_title VARCHAR(255) DEFAULT NULL,
+  contact_email        VARCHAR(255) DEFAULT NULL,
+  contact_phone        VARCHAR(50)  DEFAULT NULL,
+  created_at           DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at           DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+  CONSTRAINT fk_institution_profiles_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  INDEX idx_institution_profiles_type (institution_type),
+  INDEX idx_institution_profiles_city (city)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS institution_jobs (
+  id               CHAR(36)      PRIMARY KEY DEFAULT (UUID()),
+  institution_id   CHAR(36)      NOT NULL,
+  user_id          CHAR(36)      NOT NULL,
+  title            VARCHAR(255)  NOT NULL,
+  description      TEXT          NOT NULL,
+  subject          VARCHAR(100)  DEFAULT NULL,
+  level            VARCHAR(100)  DEFAULT NULL,
+  city             VARCHAR(100)  DEFAULT NULL,
+  employment_type  VARCHAR(30)   NOT NULL DEFAULT 'part_time',
+  work_mode        VARCHAR(20)   NOT NULL DEFAULT 'on_site',
+  salary_amount    DECIMAL(10,2) DEFAULT NULL,
+  salary_currency  VARCHAR(5)    NOT NULL DEFAULT 'USD',
+  salary_period    VARCHAR(20)   NOT NULL DEFAULT 'month',
+  requirements     JSON          DEFAULT ('[]'),
+  benefits         JSON          DEFAULT ('[]'),
+  application_email VARCHAR(255) DEFAULT NULL,
+  application_phone VARCHAR(50)  DEFAULT NULL,
+  application_url  TEXT          DEFAULT NULL,
+  expires_at       DATETIME      DEFAULT NULL,
+  is_active        BOOLEAN       NOT NULL DEFAULT TRUE,
+  created_at       DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at       DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+  CONSTRAINT fk_institution_jobs_institution FOREIGN KEY (institution_id) REFERENCES institution_profiles(id) ON DELETE CASCADE,
+  CONSTRAINT fk_institution_jobs_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  INDEX idx_institution_jobs_user (user_id),
+  INDEX idx_institution_jobs_subject (subject),
+  INDEX idx_institution_jobs_city (city),
+  INDEX idx_institution_jobs_status (is_active, expires_at),
+  INDEX idx_institution_jobs_created (created_at)
+) ENGINE=InnoDB;

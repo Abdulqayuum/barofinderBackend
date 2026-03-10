@@ -10,7 +10,7 @@ import { getAppSettingValue, listAppSettings, serializeAppSettingValue } from '.
 
 const router = Router();
 const BCRYPT_SALT_ROUNDS = parseInt(process.env.BCRYPT_SALT_ROUNDS || '10', 10);
-const PROFILE_ROLES = new Set(['student', 'parent', 'tutor']);
+const PROFILE_ROLES = new Set(['student', 'parent', 'tutor', 'institution']);
 const PROFILE_STATUSES = new Set(['active', 'suspended']);
 const TUTOR_VERIFICATION_STATUSES = new Set(['pending', 'verified', 'rejected', 'suspended']);
 

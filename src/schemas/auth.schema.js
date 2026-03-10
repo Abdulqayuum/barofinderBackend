@@ -6,7 +6,7 @@ export const signupSchema = z.object({
   full_name: z.string().min(1),
   phone: z.string().optional(),
   city: z.string().optional(),
-  role: z.enum(['student', 'tutor', 'parent']).optional(),
+  role: z.enum(['student', 'tutor', 'parent', 'institution']).optional(),
   is_parent: z.boolean().optional(),
   otp: z.string().length(6).optional()
 });

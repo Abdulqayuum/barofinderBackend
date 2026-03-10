@@ -22,6 +22,7 @@ import notificationRoutes from './routes/notifications.routes.js';
 import lookupRoutes from './routes/lookups.routes.js';
 import adminRoutes from './routes/admin.routes.js';
 import uploadRoutes from './routes/upload.routes.js';
+import institutionRoutes from './routes/institutions.routes.js';
 
 const app = express();
 const server = http.createServer(app);
@@ -41,8 +42,8 @@ if (trustProxyValue === 'true') {
 const defaultAllowedOrigins = [
   'http://localhost:5173',
   'http://localhost:8080',
-  'https://www.qalintech.shop',
-  'https://qalintech.shop',
+  'https://www.macalinhub.com',
+  'https://macalinhub.com',
 ];
 
 const envAllowedOrigins = (process.env.CORS_ORIGIN || '')
@@ -100,6 +101,7 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api', lookupRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/upload', uploadRoutes);
+app.use('/api/institutions', institutionRoutes);
 
 app.use(errorHandler);
 
