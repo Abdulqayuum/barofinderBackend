@@ -2,7 +2,7 @@ import { Router } from 'express';
 import db from '../config/database.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { requireRole } from '../middleware/roles.js';
-import { tutorPhotoUpload, courseCoverUpload, courseAssetUpload, tutorDocumentUpload, siteLogoUpload } from '../config/storage.js';
+import { tutorPhotoUpload, institutionLogoUpload, courseCoverUpload, courseAssetUpload, tutorDocumentUpload, siteLogoUpload } from '../config/storage.js';
 import { wrap } from '../middleware/error-handler.js';
 import { toPublicUploadDocuments, toPublicUploadUrl, toStoredUploadDocuments, toStoredUploadPath } from '../utils/uploads.js';
 import { assertPlatformWritable, getNumberAppSetting, upsertAppSettingValue } from '../utils/app-settings.js';
@@ -49,6 +49,20 @@ router.post('/tutor-photo', authMiddleware, withDynamicUpload(tutorPhotoUpload, 
 
   const path = toStoredUploadPath(`/uploads/tutor-photos/${file.filename}`);
   await db.query('UPDATE tutor_profiles SET profile_photo_url = ? WHERE user_id = ?', [path, req.user.id]);
+  res.json({ url: toPublicUploadUrl(path) });
+}));
+
+router.post('/institution-logo', authMiddleware, withDynamicUpload(institutionLogoUpload, 'logo', 'max_file_upload_mb', 5), wrap(async (req, res) => {
+  const file = req.file;
+  if (!file) return res.status(400).json({ error: 'No file uploaded', code: 'VALIDATION_ERROR' });
+
+  const [profiles] = await db.query('SELECT role FROM profiles WHERE user_id = ? LIMIT 1', [req.user.id]);
+  if (profiles[0]?.role !== 'institution') {
+    return res.status(403).json({ error: 'Institution account required', code: 'FORBIDDEN' });
+  }
+
+  const path = toStoredUploadPath(`/uploads/institution-logos/${file.filename}`);
+  await db.query('UPDATE profiles SET profile_photo_url = ? WHERE user_id = ?', [path, req.user.id]);
   res.json({ url: toPublicUploadUrl(path) });
 }));
 

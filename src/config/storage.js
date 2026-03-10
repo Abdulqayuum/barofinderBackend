@@ -32,6 +32,17 @@ export function tutorPhotoUpload(fileSizeMb) {
   });
 }
 
+export function institutionLogoUpload(fileSizeMb) {
+  return multer({
+    storage: makeStorage('institution-logos'),
+    limits: { fileSize: parseInt(String(fileSizeMb ?? process.env.MAX_FILE_SIZE_MB ?? '5'), 10) * 1024 * 1024 },
+    fileFilter: (req, file, cb) => {
+      if (file.mimetype.startsWith('image/')) cb(null, true);
+      else cb(new Error('Only image files allowed'));
+    }
+  });
+}
+
 export function courseCoverUpload(fileSizeMb) {
   return multer({
     storage: makeStorage('course-covers'),

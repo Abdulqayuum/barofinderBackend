@@ -6,6 +6,7 @@ import { validateBody } from '../middleware/validation.js';
 import { institutionJobSchema, upsertInstitutionSchema } from '../schemas/institution.schema.js';
 import { getPagination } from '../utils/pagination.js';
 import { wrap } from '../middleware/error-handler.js';
+import { toPublicUploadUrl } from '../utils/uploads.js';
 import {
   assertAppSettingVisibilityAllowed,
   assertPlatformWritable,
@@ -90,6 +91,7 @@ function toInstitutionProfileResponse(profile) {
     approval_status: INSTITUTION_APPROVAL_STATUSES.has(profile.approval_status) ? profile.approval_status : 'pending',
     institution_name: profile.institution_name || profile.full_name,
     city: profile.city || null,
+    logo_url: toPublicUploadUrl(profile.institution_logo_url || profile.profile_photo_url || null),
     contact_email: profile.contact_email || profile.email || null,
     contact_phone: profile.contact_phone || profile.phone || null,
   };
@@ -126,6 +128,7 @@ function toInstitutionJobResponse(job) {
       name: job.institution_name,
       type: job.institution_type,
       city: job.institution_city || null,
+      logo_url: toPublicUploadUrl(job.institution_logo_url || null),
       website_url: job.website_url || null,
       contact_email: job.institution_contact_email || null,
       contact_phone: job.institution_contact_phone || null,
@@ -135,7 +138,7 @@ function toInstitutionJobResponse(job) {
 
 async function loadInstitutionProfileByUserId(userId, executor = db) {
   const [rows] = await executor.query(
-    `SELECT ip.*, p.full_name, p.email, p.phone
+    `SELECT ip.*, p.full_name, p.email, p.phone, p.profile_photo_url AS institution_logo_url
      FROM institution_profiles ip
      JOIN profiles p ON p.user_id = ip.user_id
      WHERE ip.user_id = ?
@@ -155,6 +158,7 @@ async function loadInstitutionJobsByUserId(userId, executor = db) {
       ip.institution_name,
       ip.institution_type,
       ip.website_url,
+      p.profile_photo_url AS institution_logo_url,
       ip.contact_email AS institution_contact_email,
       ip.contact_phone AS institution_contact_phone
      FROM institution_jobs ij
@@ -233,6 +237,7 @@ router.get('/jobs', authMiddleware, wrap(async (req, res) => {
       ip.institution_name,
       ip.institution_type,
       ip.website_url,
+      p.profile_photo_url AS institution_logo_url,
       ip.contact_email AS institution_contact_email,
       ip.contact_phone AS institution_contact_phone
     FROM institution_jobs ij
