@@ -13,6 +13,8 @@ const BCRYPT_SALT_ROUNDS = parseInt(process.env.BCRYPT_SALT_ROUNDS || '10', 10);
 const PROFILE_ROLES = new Set(['student', 'parent', 'tutor', 'institution']);
 const PROFILE_STATUSES = new Set(['active', 'suspended']);
 const TUTOR_VERIFICATION_STATUSES = new Set(['pending', 'verified', 'rejected', 'suspended']);
+const INSTITUTION_APPROVAL_STATUSES = new Set(['pending', 'approved', 'rejected', 'suspended']);
+const INSTITUTION_TYPES = new Set(['school', 'university', 'college', 'academy', 'training_center', 'other']);
 
 router.use(authMiddleware);
 router.use(requireRole('admin'));
@@ -121,6 +123,22 @@ function toAdminTutorResponse(tutor) {
   };
 }
 
+function toAdminInstitutionResponse(institution) {
+  if (!institution) return null;
+
+  return {
+    ...institution,
+    email_verified: !!institution.email_verified,
+    job_count: Number(institution.job_count || 0),
+    profile: {
+      full_name: institution.full_name,
+      email: institution.email,
+      phone: institution.phone || null,
+      city: institution.city || null,
+    },
+  };
+}
+
 async function loadAdminUserById(userId, executor = db) {
   const [rows] = await executor.query(
     `SELECT p.*, u.email_verified, u.created_at AS user_created_at
@@ -159,10 +177,62 @@ async function loadAdminTutorById(tutorId, executor = db) {
   return toAdminTutorResponse(rows[0] || null);
 }
 
+async function loadAdminInstitutionById(institutionId, executor = db) {
+  const [rows] = await executor.query(
+    `SELECT
+      ip.*,
+      p.full_name,
+      p.email,
+      p.phone,
+      p.city,
+      p.status,
+      u.email_verified,
+      (
+        SELECT COUNT(*)
+        FROM institution_jobs ij
+        WHERE ij.institution_id = ip.id
+      ) AS job_count
+     FROM institution_profiles ip
+     JOIN profiles p ON p.user_id = ip.user_id
+     JOIN users u ON u.id = ip.user_id
+     WHERE ip.id = ?
+     LIMIT 1`,
+    [institutionId]
+  );
+
+  return toAdminInstitutionResponse(rows[0] || null);
+}
+
+function getInstitutionApprovalNotification(status) {
+  switch (status) {
+    case 'approved':
+      return {
+        title: 'Institution Approved',
+        message: 'Your institution profile has been approved. You can now publish tutor jobs.',
+      };
+    case 'rejected':
+      return {
+        title: 'Institution Review Update',
+        message: 'Your institution profile was rejected. Please update your details and resubmit for approval.',
+      };
+    case 'suspended':
+      return {
+        title: 'Institution Suspended',
+        message: 'Your institution profile has been suspended by an administrator.',
+      };
+    default:
+      return {
+        title: 'Institution Review Pending',
+        message: 'Your institution profile is pending admin review.',
+      };
+  }
+}
+
 router.get('/overview', wrap(async (_req, res) => {
   const [[totalUsers]] = await db.query('SELECT COUNT(*) AS total_users FROM profiles');
   const [[totalTutors]] = await db.query('SELECT COUNT(*) AS total_tutors FROM tutor_profiles');
-  const [[pendingApprovals]] = await db.query("SELECT COUNT(*) AS pending_approvals FROM tutor_profiles WHERE verification_status = 'pending'");
+  const [[pendingTutorApprovals]] = await db.query("SELECT COUNT(*) AS pending_approvals FROM tutor_profiles WHERE verification_status = 'pending'");
+  const [[pendingInstitutionApprovals]] = await db.query("SELECT COUNT(*) AS pending_approvals FROM institution_profiles WHERE approval_status = 'pending'");
   const [[activeSubs]] = await db.query("SELECT COUNT(*) AS active_subs, COALESCE(SUM(amount), 0) AS total_revenue FROM subscriptions WHERE status = 'active'");
   const [[totalCourses]] = await db.query('SELECT COUNT(*) AS total_courses FROM courses');
   const [[publishedCourses]] = await db.query('SELECT COUNT(*) AS published_courses FROM courses WHERE is_published = 1 AND status != "suspended"');
@@ -192,7 +262,7 @@ router.get('/overview', wrap(async (_req, res) => {
   res.json({
     total_users: totalUsers.total_users,
     total_tutors: totalTutors.total_tutors,
-    pending_approvals: pendingApprovals.pending_approvals,
+    pending_approvals: pendingTutorApprovals.pending_approvals + pendingInstitutionApprovals.pending_approvals,
     active_subs: activeSubs.active_subs,
     total_revenue: activeSubs.total_revenue,
     total_courses: totalCourses.total_courses,
@@ -263,6 +333,9 @@ router.post('/users', wrap(async (req, res) => {
   if (role === 'tutor') {
     return res.status(400).json({ error: 'Create tutor accounts from the Tutors page', code: 'BAD_REQUEST' });
   }
+  if (role === 'institution') {
+    return res.status(400).json({ error: 'Create institution accounts from the Institutions page', code: 'BAD_REQUEST' });
+  }
   if (!PROFILE_STATUSES.has(status)) {
     return res.status(400).json({ error: 'Invalid status', code: 'BAD_REQUEST' });
   }
@@ -322,9 +395,10 @@ router.post('/users', wrap(async (req, res) => {
 router.patch('/users/:id', wrap(async (req, res) => {
   const { id } = req.params;
   const [rows] = await db.query(
-    `SELECT p.user_id, p.role, p.is_parent, tp.id AS tutor_profile_id
+    `SELECT p.user_id, p.role, p.is_parent, tp.id AS tutor_profile_id, ip.id AS institution_profile_id
      FROM profiles p
      LEFT JOIN tutor_profiles tp ON tp.user_id = p.user_id
+     LEFT JOIN institution_profiles ip ON ip.user_id = p.user_id
      WHERE p.user_id = ?
      LIMIT 1`,
     [id]
@@ -349,11 +423,17 @@ router.patch('/users/:id', wrap(async (req, res) => {
     if (requestedRole === 'tutor' && !existing.tutor_profile_id) {
       return res.status(400).json({ error: 'Create tutor accounts from the Tutors page', code: 'BAD_REQUEST' });
     }
+    if (requestedRole === 'institution' && !existing.institution_profile_id) {
+      return res.status(400).json({ error: 'Create institution accounts from the Institutions page', code: 'BAD_REQUEST' });
+    }
     if (existing.tutor_profile_id && requestedRole !== 'tutor') {
       return res.status(400).json({ error: 'Tutor accounts must be managed from the Tutors page', code: 'BAD_REQUEST' });
     }
+    if (existing.institution_profile_id && requestedRole !== 'institution') {
+      return res.status(400).json({ error: 'Institution accounts must be managed from the Institutions page', code: 'BAD_REQUEST' });
+    }
     profileFields.push('role = ?');
-    profileValues.push(existing.tutor_profile_id ? 'tutor' : requestedRole);
+    profileValues.push(existing.tutor_profile_id ? 'tutor' : existing.institution_profile_id ? 'institution' : requestedRole);
   }
 
   if (req.body.full_name !== undefined) {
@@ -418,7 +498,8 @@ router.patch('/users/:id', wrap(async (req, res) => {
   }
 
   if (req.body.is_parent !== undefined || req.body.role !== undefined) {
-    const isParent = (existing.tutor_profile_id ? 'tutor' : requestedRole) === 'parent'
+    const effectiveRole = existing.tutor_profile_id ? 'tutor' : existing.institution_profile_id ? 'institution' : requestedRole;
+    const isParent = effectiveRole === 'parent'
       ? true
       : normalizeBoolean(req.body.is_parent, !!existing.is_parent);
     profileFields.push('is_parent = ?');
@@ -945,6 +1026,395 @@ router.delete('/tutors/:id', wrap(async (req, res) => {
   await db.query("UPDATE profiles SET role = 'student', is_parent = FALSE WHERE user_id = ? AND role = 'tutor'", [tutor.user_id]);
 
   res.json({ message: 'Tutor deleted' });
+}));
+
+router.get('/institutions', wrap(async (req, res) => {
+  const searchQuery = normalizeOptionalString(req.query.q);
+  const approvalStatus = normalizeTrimmedString(req.query.approval_status).toLowerCase();
+  const accountStatus = normalizeTrimmedString(req.query.status).toLowerCase();
+  const filters = [];
+  const params = [];
+
+  if (searchQuery) {
+    const search = `%${searchQuery}%`;
+    filters.push('(ip.institution_name LIKE ? OR p.email LIKE ? OR COALESCE(ip.city, p.city, "") LIKE ? OR COALESCE(ip.contact_person_name, "") LIKE ?)');
+    params.push(search, search, search, search);
+  }
+
+  if (approvalStatus) {
+    if (!INSTITUTION_APPROVAL_STATUSES.has(approvalStatus)) {
+      return res.status(400).json({ error: 'Invalid approval status', code: 'BAD_REQUEST' });
+    }
+    filters.push('ip.approval_status = ?');
+    params.push(approvalStatus);
+  }
+
+  if (accountStatus) {
+    if (!PROFILE_STATUSES.has(accountStatus)) {
+      return res.status(400).json({ error: 'Invalid account status', code: 'BAD_REQUEST' });
+    }
+    filters.push('p.status = ?');
+    params.push(accountStatus);
+  }
+
+  const [rows] = await db.query(
+    `SELECT
+      ip.*,
+      p.full_name,
+      p.email,
+      p.phone,
+      p.city,
+      p.status,
+      u.email_verified,
+      (
+        SELECT COUNT(*)
+        FROM institution_jobs ij
+        WHERE ij.institution_id = ip.id
+      ) AS job_count
+     FROM institution_profiles ip
+     JOIN profiles p ON p.user_id = ip.user_id
+     JOIN users u ON u.id = ip.user_id
+     ${filters.length ? `WHERE ${filters.join(' AND ')}` : ''}
+     ORDER BY
+       CASE ip.approval_status
+         WHEN 'pending' THEN 0
+         WHEN 'rejected' THEN 1
+         WHEN 'suspended' THEN 2
+         WHEN 'approved' THEN 3
+         ELSE 4
+       END,
+       ip.created_at DESC`,
+    params
+  );
+
+  res.json(rows.map((row) => toAdminInstitutionResponse(row)));
+}));
+
+router.post('/institutions', wrap(async (req, res) => {
+  const institutionName = normalizeTrimmedString(req.body.institution_name || req.body.full_name);
+  const institutionType = normalizeTrimmedString(req.body.institution_type || 'school').toLowerCase();
+  const email = normalizeEmail(req.body.email);
+  const password = normalizePassword(req.body.password);
+  const phone = normalizeOptionalString(req.body.phone);
+  const city = normalizeOptionalString(req.body.city);
+  const status = normalizeTrimmedString(req.body.status || 'active').toLowerCase();
+  const emailVerified = normalizeBoolean(req.body.email_verified, true);
+  const approvalStatus = normalizeTrimmedString(req.body.approval_status || 'pending').toLowerCase();
+  const description = normalizeOptionalString(req.body.description);
+  const websiteUrl = normalizeOptionalString(req.body.website_url);
+  const address = normalizeOptionalString(req.body.address);
+  const contactPersonName = normalizeOptionalString(req.body.contact_person_name);
+  const contactPersonTitle = normalizeOptionalString(req.body.contact_person_title);
+  const rawContactEmail = normalizeOptionalString(req.body.contact_email);
+  const parsedContactEmail = rawContactEmail ? normalizeEmail(rawContactEmail) : null;
+  const contactEmail = parsedContactEmail || email;
+  const contactPhone = normalizeOptionalString(req.body.contact_phone) || phone;
+
+  if (!institutionName) {
+    return res.status(400).json({ error: 'Institution name is required', code: 'BAD_REQUEST' });
+  }
+  if (!email) {
+    return res.status(400).json({ error: 'Email is required', code: 'BAD_REQUEST' });
+  }
+  if (!password || password.length < 6) {
+    return res.status(400).json({ error: 'Password must be at least 6 characters', code: 'BAD_REQUEST' });
+  }
+  if (rawContactEmail && !parsedContactEmail) {
+    return res.status(400).json({ error: 'Invalid contact email', code: 'BAD_REQUEST' });
+  }
+  if (!INSTITUTION_TYPES.has(institutionType)) {
+    return res.status(400).json({ error: 'Invalid institution type', code: 'BAD_REQUEST' });
+  }
+  if (!PROFILE_STATUSES.has(status)) {
+    return res.status(400).json({ error: 'Invalid account status', code: 'BAD_REQUEST' });
+  }
+  if (!INSTITUTION_APPROVAL_STATUSES.has(approvalStatus)) {
+    return res.status(400).json({ error: 'Invalid approval status', code: 'BAD_REQUEST' });
+  }
+
+  const [existingRows] = await db.query('SELECT id FROM users WHERE email = ? LIMIT 1', [email]);
+  if (existingRows[0]) {
+    return res.status(409).json({ error: 'Email already registered', code: 'CONFLICT' });
+  }
+
+  const userId = uuid();
+  const institutionId = uuid();
+  const passwordHash = await bcrypt.hash(password, BCRYPT_SALT_ROUNDS);
+  const notification = getInstitutionApprovalNotification(approvalStatus);
+
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    await conn.query(
+      'INSERT INTO users (id, email, password_hash, email_verified) VALUES (?, ?, ?, ?)',
+      [userId, email, passwordHash, emailVerified]
+    );
+
+    await conn.query(
+      `INSERT INTO profiles (user_id, full_name, email, phone, city, role, status, is_parent, student_level, subjects_interested)
+       VALUES (?, ?, ?, ?, ?, 'institution', ?, FALSE, NULL, ?)`,
+      [userId, institutionName, email, contactPhone, city, status, JSON.stringify([])]
+    );
+
+    await conn.query('INSERT IGNORE INTO user_roles (user_id, role) VALUES (?, ?)', [userId, 'user']);
+
+    await conn.query(
+      `INSERT INTO institution_profiles (
+        id,
+        user_id,
+        institution_name,
+        institution_type,
+        description,
+        website_url,
+        address,
+        city,
+        contact_person_name,
+        contact_person_title,
+        contact_email,
+        contact_phone,
+        approval_status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        institutionId,
+        userId,
+        institutionName,
+        institutionType,
+        description,
+        websiteUrl,
+        address,
+        city,
+        contactPersonName,
+        contactPersonTitle,
+        contactEmail,
+        contactPhone,
+        approvalStatus,
+      ]
+    );
+
+    await conn.query(
+      'INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)',
+      [userId, 'system', notification.title, notification.message]
+    );
+
+    await conn.commit();
+  } catch (error) {
+    await conn.rollback();
+    throw error;
+  } finally {
+    conn.release();
+  }
+
+  res.status(201).json(await loadAdminInstitutionById(institutionId));
+}));
+
+router.patch('/institutions/:id', wrap(async (req, res) => {
+  const { id } = req.params;
+  const [rows] = await db.query(
+    `SELECT ip.id, ip.user_id, ip.approval_status, p.email
+     FROM institution_profiles ip
+     JOIN profiles p ON p.user_id = ip.user_id
+     WHERE ip.id = ?
+     LIMIT 1`,
+    [id]
+  );
+
+  const existing = rows[0];
+  if (!existing) {
+    return res.status(404).json({ error: 'Institution not found', code: 'NOT_FOUND' });
+  }
+
+  const institutionFields = [];
+  const institutionValues = [];
+  const profileFields = [];
+  const profileValues = [];
+  const userFields = [];
+  const userValues = [];
+  let nextApprovalStatus = existing.approval_status;
+
+  if (req.body.institution_name !== undefined || req.body.full_name !== undefined) {
+    const institutionName = normalizeTrimmedString(req.body.institution_name || req.body.full_name);
+    if (!institutionName) {
+      return res.status(400).json({ error: 'Institution name is required', code: 'BAD_REQUEST' });
+    }
+    institutionFields.push('institution_name = ?');
+    institutionValues.push(institutionName);
+    profileFields.push('full_name = ?');
+    profileValues.push(institutionName);
+  }
+
+  if (req.body.institution_type !== undefined) {
+    const institutionType = normalizeTrimmedString(req.body.institution_type).toLowerCase();
+    if (!INSTITUTION_TYPES.has(institutionType)) {
+      return res.status(400).json({ error: 'Invalid institution type', code: 'BAD_REQUEST' });
+    }
+    institutionFields.push('institution_type = ?');
+    institutionValues.push(institutionType);
+  }
+
+  if (req.body.description !== undefined) {
+    institutionFields.push('description = ?');
+    institutionValues.push(normalizeOptionalString(req.body.description));
+  }
+
+  if (req.body.website_url !== undefined) {
+    institutionFields.push('website_url = ?');
+    institutionValues.push(normalizeOptionalString(req.body.website_url));
+  }
+
+  if (req.body.address !== undefined) {
+    institutionFields.push('address = ?');
+    institutionValues.push(normalizeOptionalString(req.body.address));
+  }
+
+  if (req.body.city !== undefined) {
+    const city = normalizeOptionalString(req.body.city);
+    institutionFields.push('city = ?');
+    institutionValues.push(city);
+    profileFields.push('city = ?');
+    profileValues.push(city);
+  }
+
+  if (req.body.contact_person_name !== undefined) {
+    institutionFields.push('contact_person_name = ?');
+    institutionValues.push(normalizeOptionalString(req.body.contact_person_name));
+  }
+
+  if (req.body.contact_person_title !== undefined) {
+    institutionFields.push('contact_person_title = ?');
+    institutionValues.push(normalizeOptionalString(req.body.contact_person_title));
+  }
+
+  if (req.body.contact_email !== undefined) {
+    const contactEmail = normalizeEmail(req.body.contact_email);
+    if (req.body.contact_email && !contactEmail) {
+      return res.status(400).json({ error: 'Invalid contact email', code: 'BAD_REQUEST' });
+    }
+    institutionFields.push('contact_email = ?');
+    institutionValues.push(contactEmail);
+  }
+
+  if (req.body.contact_phone !== undefined) {
+    const contactPhone = normalizeOptionalString(req.body.contact_phone);
+    institutionFields.push('contact_phone = ?');
+    institutionValues.push(contactPhone);
+    profileFields.push('phone = ?');
+    profileValues.push(contactPhone);
+  }
+
+  if (req.body.approval_status !== undefined) {
+    const approvalStatus = normalizeTrimmedString(req.body.approval_status).toLowerCase();
+    if (!INSTITUTION_APPROVAL_STATUSES.has(approvalStatus)) {
+      return res.status(400).json({ error: 'Invalid approval status', code: 'BAD_REQUEST' });
+    }
+    nextApprovalStatus = approvalStatus;
+    institutionFields.push('approval_status = ?');
+    institutionValues.push(approvalStatus);
+  }
+
+  if (req.body.status !== undefined) {
+    const status = normalizeTrimmedString(req.body.status).toLowerCase();
+    if (!PROFILE_STATUSES.has(status)) {
+      return res.status(400).json({ error: 'Invalid account status', code: 'BAD_REQUEST' });
+    }
+    profileFields.push('status = ?');
+    profileValues.push(status);
+  }
+
+  if (req.body.email !== undefined) {
+    const email = normalizeEmail(req.body.email);
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required', code: 'BAD_REQUEST' });
+    }
+
+    if (email !== existing.email) {
+      const [emailRows] = await db.query('SELECT id FROM users WHERE email = ? AND id != ? LIMIT 1', [email, existing.user_id]);
+      if (emailRows[0]) {
+        return res.status(409).json({ error: 'Email already registered', code: 'CONFLICT' });
+      }
+    }
+
+    userFields.push('email = ?');
+    userValues.push(email);
+    profileFields.push('email = ?');
+    profileValues.push(email);
+  }
+
+  if (req.body.email_verified !== undefined) {
+    userFields.push('email_verified = ?');
+    userValues.push(normalizeBoolean(req.body.email_verified, false));
+  }
+
+  if (req.body.password !== undefined) {
+    const password = normalizePassword(req.body.password);
+    if (!password || password.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters', code: 'BAD_REQUEST' });
+    }
+    userFields.push('password_hash = ?');
+    userValues.push(await bcrypt.hash(password, BCRYPT_SALT_ROUNDS));
+  }
+
+  if (institutionFields.length === 0 && profileFields.length === 0 && userFields.length === 0) {
+    return res.json(await loadAdminInstitutionById(id));
+  }
+
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    if (userFields.length > 0) {
+      await conn.query(`UPDATE users SET ${userFields.join(', ')} WHERE id = ?`, [...userValues, existing.user_id]);
+    }
+
+    if (profileFields.length > 0) {
+      await conn.query(`UPDATE profiles SET ${profileFields.join(', ')} WHERE user_id = ?`, [...profileValues, existing.user_id]);
+    }
+
+    if (institutionFields.length > 0) {
+      await conn.query(`UPDATE institution_profiles SET ${institutionFields.join(', ')} WHERE id = ?`, [...institutionValues, id]);
+    }
+
+    if (nextApprovalStatus !== existing.approval_status) {
+      const notification = getInstitutionApprovalNotification(nextApprovalStatus);
+      await conn.query(
+        'INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)',
+        [existing.user_id, 'system', notification.title, notification.message]
+      );
+    }
+
+    await conn.commit();
+  } catch (error) {
+    await conn.rollback();
+    throw error;
+  } finally {
+    conn.release();
+  }
+
+  res.json(await loadAdminInstitutionById(id));
+}));
+
+router.delete('/institutions/:id', wrap(async (req, res) => {
+  const { id } = req.params;
+  const [rows] = await db.query('SELECT user_id FROM institution_profiles WHERE id = ? LIMIT 1', [id]);
+  const institution = rows[0];
+  if (!institution) {
+    return res.status(404).json({ error: 'Institution not found', code: 'NOT_FOUND' });
+  }
+
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+    await conn.query('DELETE FROM institution_profiles WHERE id = ?', [id]);
+    await conn.query("UPDATE profiles SET role = 'student', is_parent = FALSE WHERE user_id = ? AND role = 'institution'", [institution.user_id]);
+    await conn.commit();
+  } catch (error) {
+    await conn.rollback();
+    throw error;
+  } finally {
+    conn.release();
+  }
+
+  res.json({ message: 'Institution deleted' });
 }));
 
 router.get('/subscriptions', wrap(async (_req, res) => {

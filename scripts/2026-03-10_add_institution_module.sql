@@ -11,13 +11,51 @@ CREATE TABLE IF NOT EXISTS institution_profiles (
   contact_person_title VARCHAR(255) DEFAULT NULL,
   contact_email        VARCHAR(255) DEFAULT NULL,
   contact_phone        VARCHAR(50)  DEFAULT NULL,
+  approval_status      VARCHAR(20)  NOT NULL DEFAULT 'pending',
   created_at           DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at           DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
   CONSTRAINT fk_institution_profiles_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
   INDEX idx_institution_profiles_type (institution_type),
-  INDEX idx_institution_profiles_city (city)
+  INDEX idx_institution_profiles_city (city),
+  INDEX idx_institution_profiles_approval (approval_status)
 ) ENGINE=InnoDB;
+
+SET @institution_profiles_has_approval_status := (
+  SELECT COUNT(*)
+  FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'institution_profiles'
+    AND COLUMN_NAME = 'approval_status'
+);
+
+SET @institution_profiles_add_approval_status_sql := IF(
+  @institution_profiles_has_approval_status = 0,
+  'ALTER TABLE institution_profiles ADD COLUMN approval_status VARCHAR(20) NOT NULL DEFAULT ''pending'' AFTER contact_phone',
+  'SELECT 1'
+);
+
+PREPARE stmt_add_institution_approval_status FROM @institution_profiles_add_approval_status_sql;
+EXECUTE stmt_add_institution_approval_status;
+DEALLOCATE PREPARE stmt_add_institution_approval_status;
+
+SET @institution_profiles_has_approval_index := (
+  SELECT COUNT(*)
+  FROM information_schema.STATISTICS
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'institution_profiles'
+    AND INDEX_NAME = 'idx_institution_profiles_approval'
+);
+
+SET @institution_profiles_add_approval_index_sql := IF(
+  @institution_profiles_has_approval_index = 0,
+  'ALTER TABLE institution_profiles ADD INDEX idx_institution_profiles_approval (approval_status)',
+  'SELECT 1'
+);
+
+PREPARE stmt_add_institution_approval_index FROM @institution_profiles_add_approval_index_sql;
+EXECUTE stmt_add_institution_approval_index;
+DEALLOCATE PREPARE stmt_add_institution_approval_index;
 
 CREATE TABLE IF NOT EXISTS institution_jobs (
   id               CHAR(36)      PRIMARY KEY DEFAULT (UUID()),

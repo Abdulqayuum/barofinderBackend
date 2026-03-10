@@ -9,6 +9,44 @@ import { wrap } from '../middleware/error-handler.js';
 import { assertPlatformWritable, getAppSettingValue } from '../utils/app-settings.js';
 
 const router = Router();
+const INSTITUTION_APPROVAL_STATUSES = new Set(['pending', 'approved', 'rejected', 'suspended']);
+
+async function loadInstitutionAccessByUserId(userId, executor = db) {
+  const [rows] = await executor.query(
+    `SELECT p.role, ip.id AS institution_id, ip.approval_status
+     FROM profiles p
+     LEFT JOIN institution_profiles ip ON ip.user_id = p.user_id
+     WHERE p.user_id = ?
+     LIMIT 1`,
+    [userId]
+  );
+
+  return rows[0] || null;
+}
+
+async function institutionOnly(req, res, next) {
+  const access = await loadInstitutionAccessByUserId(req.user.id);
+  if (!access || access.role !== 'institution') {
+    return res.status(403).json({ error: 'Institution account required', code: 'FORBIDDEN' });
+  }
+  req.institutionAccess = access;
+  next();
+}
+
+async function approvedInstitutionOnly(req, res, next) {
+  const access = req.institutionAccess || await loadInstitutionAccessByUserId(req.user.id);
+  if (!access || access.role !== 'institution') {
+    return res.status(403).json({ error: 'Institution account required', code: 'FORBIDDEN' });
+  }
+  if (!access.institution_id) {
+    return res.status(403).json({ error: 'Institution profile required', code: 'FORBIDDEN' });
+  }
+  if (access.approval_status !== 'approved') {
+    return res.status(403).json({ error: 'Institution approval required', code: 'FORBIDDEN' });
+  }
+  req.institutionAccess = access;
+  next();
+}
 
 function normalizeOptionalString(value) {
   if (typeof value !== 'string') return null;
@@ -45,6 +83,7 @@ function toInstitutionProfileResponse(profile) {
 
   return {
     ...profile,
+    approval_status: INSTITUTION_APPROVAL_STATUSES.has(profile.approval_status) ? profile.approval_status : 'pending',
     institution_name: profile.institution_name || profile.full_name,
     city: profile.city || null,
     contact_email: profile.contact_email || profile.email || null,
@@ -129,6 +168,7 @@ function buildInstitutionJobFilters(query) {
   const filters = [
     'ij.is_active = TRUE',
     '(ij.expires_at IS NULL OR ij.expires_at >= NOW())',
+    "ip.approval_status = 'approved'",
   ];
   const params = [];
 
@@ -214,15 +254,15 @@ router.get('/jobs', wrap(async (req, res) => {
   });
 }));
 
-router.get('/me', authMiddleware, wrap(async (req, res) => {
+router.get('/me', authMiddleware, institutionOnly, wrap(async (req, res) => {
   res.json(await loadInstitutionProfileByUserId(req.user.id));
 }));
 
-router.post('/me', authMiddleware, validateBody(upsertInstitutionSchema), wrap(async (req, res) => {
+router.post('/me', authMiddleware, institutionOnly, validateBody(upsertInstitutionSchema), wrap(async (req, res) => {
   await assertPlatformWritable();
 
   const data = req.body;
-  const [rows] = await db.query('SELECT id FROM institution_profiles WHERE user_id = ? LIMIT 1', [req.user.id]);
+  const [rows] = await db.query('SELECT id, approval_status FROM institution_profiles WHERE user_id = ? LIMIT 1', [req.user.id]);
   const existing = rows[0];
 
   const payload = {
@@ -242,6 +282,10 @@ router.post('/me', authMiddleware, validateBody(upsertInstitutionSchema), wrap(a
   try {
     await conn.beginTransaction();
 
+    const nextApprovalStatus = existing?.approval_status === 'rejected'
+      ? 'pending'
+      : (existing?.approval_status || 'pending');
+
     await conn.query(
       `UPDATE profiles
        SET full_name = ?, city = ?, phone = ?, role = 'institution', is_parent = FALSE, student_level = NULL
@@ -253,7 +297,7 @@ router.post('/me', authMiddleware, validateBody(upsertInstitutionSchema), wrap(a
       await conn.query(
         `UPDATE institution_profiles SET
           institution_name = ?, institution_type = ?, description = ?, website_url = ?, address = ?, city = ?,
-          contact_person_name = ?, contact_person_title = ?, contact_email = ?, contact_phone = ?
+          contact_person_name = ?, contact_person_title = ?, contact_email = ?, contact_phone = ?, approval_status = ?
          WHERE user_id = ?`,
         [
           payload.institution_name,
@@ -266,14 +310,15 @@ router.post('/me', authMiddleware, validateBody(upsertInstitutionSchema), wrap(a
           payload.contact_person_title,
           payload.contact_email,
           payload.contact_phone,
+          nextApprovalStatus,
           req.user.id,
         ]
       );
     } else {
       await conn.query(
         `INSERT INTO institution_profiles
-         (id, user_id, institution_name, institution_type, description, website_url, address, city, contact_person_name, contact_person_title, contact_email, contact_phone)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, user_id, institution_name, institution_type, description, website_url, address, city, contact_person_name, contact_person_title, contact_email, contact_phone, approval_status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           uuid(),
           req.user.id,
@@ -287,6 +332,7 @@ router.post('/me', authMiddleware, validateBody(upsertInstitutionSchema), wrap(a
           payload.contact_person_title,
           payload.contact_email,
           payload.contact_phone,
+          'pending',
         ]
       );
     }
@@ -314,11 +360,11 @@ router.post('/me', authMiddleware, validateBody(upsertInstitutionSchema), wrap(a
   res.json(await loadInstitutionProfileByUserId(req.user.id));
 }));
 
-router.get('/me/jobs', authMiddleware, wrap(async (req, res) => {
+router.get('/me/jobs', authMiddleware, institutionOnly, wrap(async (req, res) => {
   res.json(await loadInstitutionJobsByUserId(req.user.id));
 }));
 
-router.post('/jobs', authMiddleware, validateBody(institutionJobSchema), wrap(async (req, res) => {
+router.post('/jobs', authMiddleware, institutionOnly, approvedInstitutionOnly, validateBody(institutionJobSchema), wrap(async (req, res) => {
   await assertPlatformWritable();
 
   const [institutionRows] = await db.query(
@@ -397,7 +443,7 @@ router.post('/jobs', authMiddleware, validateBody(institutionJobSchema), wrap(as
   res.status(201).json(jobs.find((job) => job.id === jobId) || null);
 }));
 
-router.patch('/jobs/:id', authMiddleware, validateBody(institutionJobSchema.partial()), wrap(async (req, res) => {
+router.patch('/jobs/:id', authMiddleware, institutionOnly, approvedInstitutionOnly, validateBody(institutionJobSchema.partial()), wrap(async (req, res) => {
   const { id } = req.params;
   const [rows] = await db.query('SELECT user_id FROM institution_jobs WHERE id = ? LIMIT 1', [id]);
   const job = rows[0];
@@ -468,7 +514,7 @@ router.patch('/jobs/:id', authMiddleware, validateBody(institutionJobSchema.part
   res.json(jobs.find((entry) => entry.id === id) || null);
 }));
 
-router.delete('/jobs/:id', authMiddleware, wrap(async (req, res) => {
+router.delete('/jobs/:id', authMiddleware, institutionOnly, approvedInstitutionOnly, wrap(async (req, res) => {
   const { id } = req.params;
   const [rows] = await db.query('SELECT user_id FROM institution_jobs WHERE id = ? LIMIT 1', [id]);
   const job = rows[0];
