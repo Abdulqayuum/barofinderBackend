@@ -1,16 +1,163 @@
 import { Router } from 'express';
+import bcrypt from 'bcryptjs';
 import db from '../config/database.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { requireRole } from '../middleware/roles.js';
 import { wrap } from '../middleware/error-handler.js';
 import { v4 as uuid } from 'uuid';
 import { toPublicUploadDocuments, toPublicUploadUrl, toStoredUploadDocuments, toStoredUploadPath } from '../utils/uploads.js';
-import { listAppSettings, serializeAppSettingValue } from '../utils/app-settings.js';
+import { getAppSettingValue, listAppSettings, serializeAppSettingValue } from '../utils/app-settings.js';
 
 const router = Router();
+const BCRYPT_SALT_ROUNDS = parseInt(process.env.BCRYPT_SALT_ROUNDS || '10', 10);
+const PROFILE_ROLES = new Set(['student', 'parent', 'tutor']);
+const PROFILE_STATUSES = new Set(['active', 'suspended']);
+const TUTOR_VERIFICATION_STATUSES = new Set(['pending', 'verified', 'rejected', 'suspended']);
 
 router.use(authMiddleware);
 router.use(requireRole('admin'));
+
+function normalizeTrimmedString(value) {
+  if (typeof value !== 'string') return '';
+  return value.trim();
+}
+
+function normalizeOptionalString(value) {
+  const normalized = normalizeTrimmedString(value);
+  return normalized || null;
+}
+
+function normalizeBoolean(value, fallback = false) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  if (typeof value !== 'string') return fallback;
+
+  const normalized = value.trim().toLowerCase();
+  if (['true', '1', 'yes', 'on'].includes(normalized)) return true;
+  if (['false', '0', 'no', 'off', ''].includes(normalized)) return false;
+  return fallback;
+}
+
+function normalizeNumber(value, fallback = 0, { nullable = false } = {}) {
+  if (value == null || value === '') return nullable ? null : fallback;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return nullable ? null : fallback;
+  return numeric;
+}
+
+function normalizeStringArray(value) {
+  if (Array.isArray(value)) {
+    return [...new Set(value.map((item) => normalizeTrimmedString(String(item))).filter(Boolean))];
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return [];
+
+    try {
+      const parsed = JSON.parse(trimmed);
+      return normalizeStringArray(parsed);
+    } catch {
+      return [...new Set(trimmed.split(',').map((item) => item.trim()).filter(Boolean))];
+    }
+  }
+
+  return [];
+}
+
+function normalizeJsonArray(value) {
+  if (Array.isArray(value)) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return [];
+
+    try {
+      const parsed = JSON.parse(trimmed);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  return [];
+}
+
+function normalizeEmail(value) {
+  const normalized = normalizeTrimmedString(value).toLowerCase();
+  return normalized || null;
+}
+
+function normalizePassword(value) {
+  return typeof value === 'string' ? value : '';
+}
+
+function toAdminTutorResponse(tutor) {
+  if (!tutor) return null;
+
+  return {
+    ...tutor,
+    email_verified: !!tutor.email_verified,
+    open_to_work: !!tutor.open_to_work,
+    online_available: !!tutor.online_available,
+    offline_available: !!tutor.offline_available,
+    verified_badge: !!tutor.verified_badge,
+    profile_photo_url: toPublicUploadUrl(tutor.profile_photo_url),
+    subjects: normalizeJsonArray(tutor.subjects),
+    levels: normalizeJsonArray(tutor.levels),
+    languages: normalizeJsonArray(tutor.languages),
+    service_areas: normalizeJsonArray(tutor.service_areas),
+    availability: normalizeJsonArray(tutor.availability),
+    packages: normalizeJsonArray(tutor.packages),
+    verification_documents: toPublicUploadDocuments(normalizeJsonArray(tutor.verification_documents)),
+    profile: {
+      full_name: tutor.full_name,
+      email: tutor.email,
+      phone: tutor.phone || null,
+      city: tutor.city || null,
+    },
+  };
+}
+
+async function loadAdminUserById(userId, executor = db) {
+  const [rows] = await executor.query(
+    `SELECT p.*, u.email_verified, u.created_at AS user_created_at
+     FROM profiles p
+     JOIN users u ON u.id = p.user_id
+     WHERE p.user_id = ?
+     LIMIT 1`,
+    [userId]
+  );
+
+  const profile = rows[0];
+  if (!profile) return null;
+
+  const [roleRows] = await executor.query('SELECT role FROM user_roles WHERE user_id = ?', [userId]);
+
+  return {
+    ...profile,
+    email_verified: !!profile.email_verified,
+    is_parent: !!profile.is_parent,
+    subjects_interested: normalizeStringArray(profile.subjects_interested),
+    app_roles: roleRows.map((row) => row.role),
+  };
+}
+
+async function loadAdminTutorById(tutorId, executor = db) {
+  const [rows] = await executor.query(
+    `SELECT tp.*, p.full_name, p.email, p.phone, p.city, p.status, u.email_verified
+     FROM tutor_profiles tp
+     JOIN profiles p ON p.user_id = tp.user_id
+     JOIN users u ON u.id = tp.user_id
+     WHERE tp.id = ?
+     LIMIT 1`,
+    [tutorId]
+  );
+
+  return toAdminTutorResponse(rows[0] || null);
+}
 
 router.get('/overview', wrap(async (_req, res) => {
   const [[totalUsers]] = await db.query('SELECT COUNT(*) AS total_users FROM profiles');
@@ -61,45 +208,258 @@ router.get('/overview', wrap(async (_req, res) => {
 
 router.get('/users', wrap(async (req, res) => {
   const q = req.query.q ? `%${req.query.q}%` : null;
+  const roleMap = {};
   const [rows] = await db.query(
     `SELECT p.*, u.email_verified, u.created_at AS user_created_at
      FROM profiles p JOIN users u ON u.id = p.user_id
-     ${q ? 'WHERE p.full_name LIKE ? OR p.email LIKE ?' : ''}
+     ${q ? 'WHERE p.full_name LIKE ? OR p.email LIKE ? OR p.phone LIKE ?' : ''}
      ORDER BY p.created_at DESC`,
-    q ? [q, q] : []
+    q ? [q, q, q] : []
   );
 
   if (rows.length > 0) {
-    const userIds = rows.map(r => r.user_id);
+    const userIds = rows.map((row) => row.user_id);
     const [roleRows] = await db.query('SELECT user_id, role FROM user_roles WHERE user_id IN (?)', [userIds]);
-    const roleMap = {};
-    roleRows.forEach(rr => {
-      if (!roleMap[rr.user_id]) roleMap[rr.user_id] = [];
-      roleMap[rr.user_id].push(rr.role);
-    });
-    rows.forEach(r => {
-      r.app_roles = roleMap[r.user_id] || [];
+    roleRows.forEach((roleRow) => {
+      if (!roleMap[roleRow.user_id]) roleMap[roleRow.user_id] = [];
+      roleMap[roleRow.user_id].push(roleRow.role);
     });
   }
 
-  res.json(rows);
+  res.json(rows.map((row) => ({
+    ...row,
+    email_verified: !!row.email_verified,
+    is_parent: !!row.is_parent,
+    subjects_interested: normalizeStringArray(row.subjects_interested),
+    app_roles: roleMap?.[row.user_id] || [],
+  })));
+}));
+
+router.post('/users', wrap(async (req, res) => {
+  const fullName = normalizeTrimmedString(req.body.full_name);
+  const email = normalizeEmail(req.body.email);
+  const password = normalizePassword(req.body.password);
+  const role = normalizeTrimmedString(req.body.role || 'student').toLowerCase();
+  const status = normalizeTrimmedString(req.body.status || 'active').toLowerCase();
+  const phone = normalizeOptionalString(req.body.phone);
+  const city = normalizeOptionalString(req.body.city);
+  const studentLevel = normalizeOptionalString(req.body.student_level);
+  const subjectsInterested = normalizeStringArray(req.body.subjects_interested);
+  const emailVerified = normalizeBoolean(req.body.email_verified, true);
+  const grantAdmin = normalizeBoolean(req.body.grant_admin, false);
+
+  if (!fullName) {
+    return res.status(400).json({ error: 'Full name is required', code: 'BAD_REQUEST' });
+  }
+  if (!email) {
+    return res.status(400).json({ error: 'Email is required', code: 'BAD_REQUEST' });
+  }
+  if (!password || password.length < 6) {
+    return res.status(400).json({ error: 'Password must be at least 6 characters', code: 'BAD_REQUEST' });
+  }
+  if (!PROFILE_ROLES.has(role)) {
+    return res.status(400).json({ error: 'Invalid role', code: 'BAD_REQUEST' });
+  }
+  if (role === 'tutor') {
+    return res.status(400).json({ error: 'Create tutor accounts from the Tutors page', code: 'BAD_REQUEST' });
+  }
+  if (!PROFILE_STATUSES.has(status)) {
+    return res.status(400).json({ error: 'Invalid status', code: 'BAD_REQUEST' });
+  }
+
+  const [existing] = await db.query('SELECT id FROM users WHERE email = ? LIMIT 1', [email]);
+  if (existing.length > 0) {
+    return res.status(409).json({ error: 'Email already registered', code: 'CONFLICT' });
+  }
+
+  const userId = uuid();
+  const passwordHash = await bcrypt.hash(password, BCRYPT_SALT_ROUNDS);
+  const isParent = role === 'parent';
+
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    await conn.query(
+      'INSERT INTO users (id, email, password_hash, email_verified) VALUES (?, ?, ?, ?)',
+      [userId, email, passwordHash, emailVerified]
+    );
+
+    await conn.query(
+      `INSERT INTO profiles (user_id, full_name, email, phone, city, role, status, is_parent, student_level, subjects_interested)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        userId,
+        fullName,
+        email,
+        phone,
+        city,
+        role,
+        status,
+        isParent,
+        studentLevel,
+        JSON.stringify(subjectsInterested),
+      ]
+    );
+
+    await conn.query('INSERT IGNORE INTO user_roles (user_id, role) VALUES (?, ?)', [userId, 'user']);
+    if (grantAdmin) {
+      await conn.query('INSERT IGNORE INTO user_roles (user_id, role) VALUES (?, ?)', [userId, 'admin']);
+    }
+
+    await conn.commit();
+  } catch (error) {
+    await conn.rollback();
+    throw error;
+  } finally {
+    conn.release();
+  }
+
+  const created = await loadAdminUserById(userId);
+  res.status(201).json(created);
 }));
 
 router.patch('/users/:id', wrap(async (req, res) => {
   const { id } = req.params;
-  const updates = req.body;
-  const fields = [];
-  const values = [];
-  for (const key of Object.keys(updates)) {
-    fields.push(`${key} = ?`);
-    values.push(updates[key]);
-  }
-  if (fields.length === 0) return res.json({ message: 'No changes' });
+  const [rows] = await db.query(
+    `SELECT p.user_id, p.role, p.is_parent, tp.id AS tutor_profile_id
+     FROM profiles p
+     LEFT JOIN tutor_profiles tp ON tp.user_id = p.user_id
+     WHERE p.user_id = ?
+     LIMIT 1`,
+    [id]
+  );
 
-  values.push(id);
-  await db.query(`UPDATE profiles SET ${fields.join(', ')} WHERE user_id = ?`, values);
-  const [rows] = await db.query('SELECT * FROM profiles WHERE user_id = ?', [id]);
-  res.json(rows[0]);
+  const existing = rows[0];
+  if (!existing) {
+    return res.status(404).json({ error: 'Profile not found', code: 'NOT_FOUND' });
+  }
+
+  const profileFields = [];
+  const profileValues = [];
+  const userFields = [];
+  const userValues = [];
+
+  let requestedRole = existing.role;
+  if (req.body.role !== undefined) {
+    requestedRole = normalizeTrimmedString(req.body.role).toLowerCase();
+    if (!PROFILE_ROLES.has(requestedRole)) {
+      return res.status(400).json({ error: 'Invalid role', code: 'BAD_REQUEST' });
+    }
+    if (requestedRole === 'tutor' && !existing.tutor_profile_id) {
+      return res.status(400).json({ error: 'Create tutor accounts from the Tutors page', code: 'BAD_REQUEST' });
+    }
+    if (existing.tutor_profile_id && requestedRole !== 'tutor') {
+      return res.status(400).json({ error: 'Tutor accounts must be managed from the Tutors page', code: 'BAD_REQUEST' });
+    }
+    profileFields.push('role = ?');
+    profileValues.push(existing.tutor_profile_id ? 'tutor' : requestedRole);
+  }
+
+  if (req.body.full_name !== undefined) {
+    const fullName = normalizeTrimmedString(req.body.full_name);
+    if (!fullName) {
+      return res.status(400).json({ error: 'Full name is required', code: 'BAD_REQUEST' });
+    }
+    profileFields.push('full_name = ?');
+    profileValues.push(fullName);
+  }
+
+  if (req.body.email !== undefined) {
+    const email = normalizeEmail(req.body.email);
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required', code: 'BAD_REQUEST' });
+    }
+
+    const [emailRows] = await db.query('SELECT id FROM users WHERE email = ? AND id != ? LIMIT 1', [email, id]);
+    if (emailRows.length > 0) {
+      return res.status(409).json({ error: 'Email already registered', code: 'CONFLICT' });
+    }
+
+    userFields.push('email = ?');
+    userValues.push(email);
+    profileFields.push('email = ?');
+    profileValues.push(email);
+  }
+
+  if (req.body.password !== undefined) {
+    const password = normalizePassword(req.body.password);
+    if (password) {
+      if (password.length < 6) {
+        return res.status(400).json({ error: 'Password must be at least 6 characters', code: 'BAD_REQUEST' });
+      }
+      userFields.push('password_hash = ?');
+      userValues.push(await bcrypt.hash(password, BCRYPT_SALT_ROUNDS));
+    }
+  }
+
+  if (req.body.email_verified !== undefined) {
+    userFields.push('email_verified = ?');
+    userValues.push(normalizeBoolean(req.body.email_verified, false));
+  }
+
+  if (req.body.phone !== undefined) {
+    profileFields.push('phone = ?');
+    profileValues.push(normalizeOptionalString(req.body.phone));
+  }
+
+  if (req.body.city !== undefined) {
+    profileFields.push('city = ?');
+    profileValues.push(normalizeOptionalString(req.body.city));
+  }
+
+  if (req.body.status !== undefined) {
+    const status = normalizeTrimmedString(req.body.status).toLowerCase();
+    if (!PROFILE_STATUSES.has(status)) {
+      return res.status(400).json({ error: 'Invalid status', code: 'BAD_REQUEST' });
+    }
+    profileFields.push('status = ?');
+    profileValues.push(status);
+  }
+
+  if (req.body.is_parent !== undefined || req.body.role !== undefined) {
+    const isParent = (existing.tutor_profile_id ? 'tutor' : requestedRole) === 'parent'
+      ? true
+      : normalizeBoolean(req.body.is_parent, !!existing.is_parent);
+    profileFields.push('is_parent = ?');
+    profileValues.push(isParent);
+  }
+
+  if (req.body.student_level !== undefined) {
+    profileFields.push('student_level = ?');
+    profileValues.push(normalizeOptionalString(req.body.student_level));
+  }
+
+  if (req.body.subjects_interested !== undefined) {
+    profileFields.push('subjects_interested = ?');
+    profileValues.push(JSON.stringify(normalizeStringArray(req.body.subjects_interested)));
+  }
+
+  if (profileFields.length === 0 && userFields.length === 0) {
+    return res.json(await loadAdminUserById(id));
+  }
+
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    if (userFields.length > 0) {
+      await conn.query(`UPDATE users SET ${userFields.join(', ')} WHERE id = ?`, [...userValues, id]);
+    }
+
+    if (profileFields.length > 0) {
+      await conn.query(`UPDATE profiles SET ${profileFields.join(', ')} WHERE user_id = ?`, [...profileValues, id]);
+    }
+
+    await conn.commit();
+  } catch (error) {
+    await conn.rollback();
+    throw error;
+  } finally {
+    conn.release();
+  }
+
+  res.json(await loadAdminUserById(id));
 }));
 
 router.patch('/users/:id/suspend', wrap(async (req, res) => {
@@ -114,13 +474,23 @@ router.patch('/users/:id/suspend', wrap(async (req, res) => {
 
 router.post('/users/:id/roles', wrap(async (req, res) => {
   const { id } = req.params;
-  const { role } = req.body;
-  await db.query('INSERT IGNORE INTO user_roles (user_id, role) VALUES (?, ?)', [id, role || 'user']);
+  const role = normalizeTrimmedString(req.body.role || 'user').toLowerCase();
+  if (!['admin', 'moderator', 'user'].includes(role)) {
+    return res.status(400).json({ error: 'Invalid app role', code: 'BAD_REQUEST' });
+  }
+  await db.query('INSERT IGNORE INTO user_roles (user_id, role) VALUES (?, ?)', [id, role]);
   res.json({ message: 'Role assigned' });
 }));
 
 router.delete('/users/:id/roles', wrap(async (req, res) => {
   const { id } = req.params;
+  const role = normalizeTrimmedString(req.query.role).toLowerCase();
+
+  if (role) {
+    await db.query('DELETE FROM user_roles WHERE user_id = ? AND role = ?', [id, role]);
+    return res.json({ message: 'Role removed' });
+  }
+
   await db.query('DELETE FROM user_roles WHERE user_id = ?', [id]);
   res.json({ message: 'Roles removed' });
 }));
@@ -157,38 +527,143 @@ router.delete('/users/:id', wrap(async (req, res) => {
 
 router.get('/tutors', wrap(async (_req, res) => {
   const [rows] = await db.query(
-    `SELECT tp.*, p.full_name, p.email, p.city, p.status
-     FROM tutor_profiles tp JOIN profiles p ON p.user_id = tp.user_id
+    `SELECT tp.*, p.full_name, p.email, p.phone, p.city, p.status, u.email_verified
+     FROM tutor_profiles tp
+     JOIN profiles p ON p.user_id = tp.user_id
+     JOIN users u ON u.id = tp.user_id
      ORDER BY tp.created_at DESC`
   );
 
-  const parseJson = (val) => {
-    if (!val) return [];
-    if (typeof val === 'string') {
-      try { return JSON.parse(val); } catch { return []; }
-    }
-    return Array.isArray(val) ? val : [];
-  };
+  res.json(rows.map((row) => toAdminTutorResponse(row)));
+}));
 
-  const tutors = rows.map((t) => ({
-    ...t,
-    open_to_work: !!t.open_to_work,
-    profile_photo_url: toPublicUploadUrl(t.profile_photo_url),
-    subjects: parseJson(t.subjects),
-    levels: parseJson(t.levels),
-    languages: parseJson(t.languages),
-    service_areas: parseJson(t.service_areas),
-    availability: parseJson(t.availability),
-    packages: parseJson(t.packages),
-    verification_documents: toPublicUploadDocuments(parseJson(t.verification_documents)),
-  }));
+router.post('/tutors', wrap(async (req, res) => {
+  const fullName = normalizeTrimmedString(req.body.full_name);
+  const email = normalizeEmail(req.body.email);
+  const password = normalizePassword(req.body.password);
+  const status = normalizeTrimmedString(req.body.status || 'active').toLowerCase();
+  const verificationStatus = normalizeTrimmedString(req.body.verification_status || 'pending').toLowerCase();
+  const phone = normalizeOptionalString(req.body.phone);
+  const city = normalizeOptionalString(req.body.city);
+  const bio = normalizeOptionalString(req.body.bio);
+  const education = normalizeOptionalString(req.body.education);
+  const experienceYears = normalizeNumber(req.body.experience_years, 0);
+  const onlineHourly = normalizeNumber(req.body.online_hourly, 0);
+  const offlineHourly = normalizeNumber(req.body.offline_hourly, 0, { nullable: true });
+  const teachingStyle = normalizeOptionalString(req.body.teaching_style);
+  const gender = normalizeOptionalString(req.body.gender);
+  const currency = normalizeTrimmedString(req.body.currency || String(await getAppSettingValue('currency_default', 'USD'))).toUpperCase() || 'USD';
+  const subjects = normalizeStringArray(req.body.subjects);
+  const levels = normalizeStringArray(req.body.levels);
+  const languages = normalizeStringArray(req.body.languages);
+  const serviceAreas = normalizeStringArray(req.body.service_areas);
+  const availability = normalizeJsonArray(req.body.availability);
+  const packages = normalizeJsonArray(req.body.packages);
+  const emailVerified = normalizeBoolean(req.body.email_verified, true);
+  const onlineAvailable = normalizeBoolean(req.body.online_available, true);
+  const offlineAvailable = normalizeBoolean(req.body.offline_available, false);
+  const openToWork = normalizeBoolean(req.body.open_to_work, false);
+  const verificationDocuments = toStoredUploadDocuments(normalizeJsonArray(req.body.verification_documents));
+  const profilePhotoUrl = req.body.profile_photo_url !== undefined ? toStoredUploadPath(req.body.profile_photo_url) : null;
+  const verifiedBadge = verificationStatus === 'verified'
+    ? normalizeBoolean(req.body.verified_badge, verificationDocuments.length > 0)
+    : false;
 
-  res.json(tutors);
+  if (!fullName) {
+    return res.status(400).json({ error: 'Full name is required', code: 'BAD_REQUEST' });
+  }
+  if (!email) {
+    return res.status(400).json({ error: 'Email is required', code: 'BAD_REQUEST' });
+  }
+  if (!password || password.length < 6) {
+    return res.status(400).json({ error: 'Password must be at least 6 characters', code: 'BAD_REQUEST' });
+  }
+  if (!PROFILE_STATUSES.has(status)) {
+    return res.status(400).json({ error: 'Invalid status', code: 'BAD_REQUEST' });
+  }
+  if (!TUTOR_VERIFICATION_STATUSES.has(verificationStatus)) {
+    return res.status(400).json({ error: 'Invalid verification status', code: 'BAD_REQUEST' });
+  }
+
+  const [existing] = await db.query('SELECT id FROM users WHERE email = ? LIMIT 1', [email]);
+  if (existing.length > 0) {
+    return res.status(409).json({ error: 'Email already registered', code: 'CONFLICT' });
+  }
+
+  const userId = uuid();
+  const tutorId = uuid();
+  const passwordHash = await bcrypt.hash(password, BCRYPT_SALT_ROUNDS);
+
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    await conn.query(
+      'INSERT INTO users (id, email, password_hash, email_verified) VALUES (?, ?, ?, ?)',
+      [userId, email, passwordHash, emailVerified]
+    );
+
+    await conn.query(
+      `INSERT INTO profiles (user_id, full_name, email, phone, city, role, status, is_parent)
+       VALUES (?, ?, ?, ?, ?, 'tutor', ?, FALSE)`,
+      [userId, fullName, email, phone, city, status]
+    );
+
+    await conn.query('INSERT IGNORE INTO user_roles (user_id, role) VALUES (?, ?)', [userId, 'user']);
+
+    await conn.query(
+      `INSERT INTO tutor_profiles (
+        id, user_id, bio, education, experience_years, subjects, levels, languages,
+        online_available, offline_available, service_areas, open_to_work, verification_status,
+        verified_badge, profile_photo_url, online_hourly, offline_hourly, currency,
+        teaching_style, gender, packages, availability, verification_documents
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        tutorId,
+        userId,
+        bio,
+        education,
+        experienceYears,
+        JSON.stringify(subjects),
+        JSON.stringify(levels),
+        JSON.stringify(languages),
+        onlineAvailable,
+        offlineAvailable,
+        JSON.stringify(serviceAreas),
+        openToWork,
+        verificationStatus,
+        verifiedBadge,
+        profilePhotoUrl,
+        onlineHourly,
+        offlineHourly,
+        currency,
+        teachingStyle,
+        gender,
+        JSON.stringify(packages),
+        JSON.stringify(availability),
+        JSON.stringify(verificationDocuments),
+      ]
+    );
+
+    await conn.commit();
+  } catch (error) {
+    await conn.rollback();
+    throw error;
+  } finally {
+    conn.release();
+  }
+
+  res.status(201).json(await loadAdminTutorById(tutorId));
 }));
 
 router.patch('/tutors/:id/verify', wrap(async (req, res) => {
   const { id } = req.params;
-  const { verification_status, verified_badge } = req.body;
+  const verificationStatus = normalizeTrimmedString(req.body.verification_status).toLowerCase();
+  const { verified_badge } = req.body;
+
+  if (!TUTOR_VERIFICATION_STATUSES.has(verificationStatus)) {
+    return res.status(400).json({ error: 'Invalid verification status', code: 'BAD_REQUEST' });
+  }
 
   const [tRows] = await db.query('SELECT user_id, verification_documents FROM tutor_profiles WHERE id = ?', [id]);
   const tutor = tRows[0];
@@ -197,7 +672,7 @@ router.patch('/tutors/:id/verify', wrap(async (req, res) => {
   const userId = tutor.user_id;
 
   let grantBadge = false;
-  if (verification_status === 'verified') {
+  if (verificationStatus === 'verified') {
     const raw = tutor.verification_documents;
     let docs = [];
     if (raw) {
@@ -211,21 +686,21 @@ router.patch('/tutors/:id/verify', wrap(async (req, res) => {
     }
   }
 
-  if (verification_status === 'rejected') {
+  if (verificationStatus === 'rejected') {
     grantBadge = false;
     await db.query(
       'UPDATE tutor_profiles SET verification_status = ?, verified_badge = FALSE, verification_documents = NULL WHERE id = ?',
-      [verification_status, id]
+      [verificationStatus, id]
     );
     await db.query(
       `INSERT INTO notifications (user_id, type, title, message) VALUES (?, 'verification', 'Verification Rejected', 'Your uploaded documents were rejected. Please upload valid verification documents.')`,
       [userId]
     );
-  } else if (verification_status === 'suspended') {
+  } else if (verificationStatus === 'suspended') {
     grantBadge = false;
     await db.query(
       'UPDATE tutor_profiles SET verification_status = ?, verified_badge = FALSE WHERE id = ?',
-      [verification_status, id]
+      [verificationStatus, id]
     );
     await db.query(
       `INSERT INTO notifications (user_id, type, title, message) VALUES (?, 'verification', 'Account Suspended', 'Your tutor profile has been suspended by an administrator.')`,
@@ -235,9 +710,9 @@ router.patch('/tutors/:id/verify', wrap(async (req, res) => {
     // verified or pending
     await db.query(
       'UPDATE tutor_profiles SET verification_status = ?, verified_badge = ? WHERE id = ?',
-      [verification_status, grantBadge, id]
+      [verificationStatus, grantBadge, id]
     );
-    if (verification_status === 'verified') {
+    if (verificationStatus === 'verified') {
       const msg = grantBadge ? 'Your tutor profile has been verified and you received the Verified Badge!' : 'Your tutor profile has been verified. Upload documents to get the Verified Badge!';
       await db.query(
         `INSERT INTO notifications (user_id, type, title, message) VALUES (?, 'verification', 'Profile Verified', ?)`,
@@ -246,48 +721,216 @@ router.patch('/tutors/:id/verify', wrap(async (req, res) => {
     }
   }
 
-  const [rows] = await db.query('SELECT * FROM tutor_profiles WHERE id = ?', [id]);
-  res.json({
-    ...rows[0],
-    open_to_work: !!rows[0]?.open_to_work,
-    profile_photo_url: toPublicUploadUrl(rows[0]?.profile_photo_url),
-    verification_documents: toPublicUploadDocuments(rows[0]?.verification_documents),
-    badge_granted: grantBadge,
-  });
+  const updated = await loadAdminTutorById(id);
+  res.json({ ...updated, badge_granted: grantBadge });
 }));
 
 router.patch('/tutors/:id', wrap(async (req, res) => {
   const { id } = req.params;
-  const updates = req.body;
-  const fields = [];
-  const values = [];
+  const [rows] = await db.query(
+    `SELECT tp.id, tp.user_id
+     FROM tutor_profiles tp
+     WHERE tp.id = ?
+     LIMIT 1`,
+    [id]
+  );
 
-  const jsonFields = new Set(['subjects', 'levels', 'languages', 'service_areas', 'availability', 'packages']);
-
-  for (const key of Object.keys(updates)) {
-    fields.push(`${key} = ?`);
-    let val = updates[key];
-    if (jsonFields.has(key)) {
-      val = JSON.stringify(updates[key]);
-    } else if (key === 'profile_photo_url') {
-      val = toStoredUploadPath(updates[key]);
-    } else if (key === 'verification_documents') {
-      val = JSON.stringify(toStoredUploadDocuments(updates[key]));
-    }
-    values.push(val);
+  const existing = rows[0];
+  if (!existing) {
+    return res.status(404).json({ error: 'Tutor not found', code: 'NOT_FOUND' });
   }
 
-  if (fields.length === 0) return res.json({ message: 'No changes' });
+  const profileFields = [];
+  const profileValues = [];
+  const userFields = [];
+  const userValues = [];
+  const tutorFields = [];
+  const tutorValues = [];
+  let nextVerificationStatus = null;
 
-  values.push(id);
-  await db.query(`UPDATE tutor_profiles SET ${fields.join(', ')} WHERE id = ?`, values);
-  const [rows] = await db.query('SELECT * FROM tutor_profiles WHERE id = ?', [id]);
-  res.json({
-    ...rows[0],
-    open_to_work: !!rows[0]?.open_to_work,
-    profile_photo_url: toPublicUploadUrl(rows[0]?.profile_photo_url),
-    verification_documents: toPublicUploadDocuments(rows[0]?.verification_documents),
-  });
+  if (req.body.full_name !== undefined) {
+    const fullName = normalizeTrimmedString(req.body.full_name);
+    if (!fullName) {
+      return res.status(400).json({ error: 'Full name is required', code: 'BAD_REQUEST' });
+    }
+    profileFields.push('full_name = ?');
+    profileValues.push(fullName);
+  }
+
+  if (req.body.email !== undefined) {
+    const email = normalizeEmail(req.body.email);
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required', code: 'BAD_REQUEST' });
+    }
+
+    const [emailRows] = await db.query('SELECT id FROM users WHERE email = ? AND id != ? LIMIT 1', [email, existing.user_id]);
+    if (emailRows.length > 0) {
+      return res.status(409).json({ error: 'Email already registered', code: 'CONFLICT' });
+    }
+
+    userFields.push('email = ?');
+    userValues.push(email);
+    profileFields.push('email = ?');
+    profileValues.push(email);
+  }
+
+  if (req.body.password !== undefined) {
+    const password = normalizePassword(req.body.password);
+    if (password) {
+      if (password.length < 6) {
+        return res.status(400).json({ error: 'Password must be at least 6 characters', code: 'BAD_REQUEST' });
+      }
+      userFields.push('password_hash = ?');
+      userValues.push(await bcrypt.hash(password, BCRYPT_SALT_ROUNDS));
+    }
+  }
+
+  if (req.body.email_verified !== undefined) {
+    userFields.push('email_verified = ?');
+    userValues.push(normalizeBoolean(req.body.email_verified, false));
+  }
+
+  if (req.body.phone !== undefined) {
+    profileFields.push('phone = ?');
+    profileValues.push(normalizeOptionalString(req.body.phone));
+  }
+
+  if (req.body.city !== undefined) {
+    profileFields.push('city = ?');
+    profileValues.push(normalizeOptionalString(req.body.city));
+  }
+
+  if (req.body.status !== undefined) {
+    const status = normalizeTrimmedString(req.body.status).toLowerCase();
+    if (!PROFILE_STATUSES.has(status)) {
+      return res.status(400).json({ error: 'Invalid status', code: 'BAD_REQUEST' });
+    }
+    profileFields.push('status = ?');
+    profileValues.push(status);
+  }
+
+  if (req.body.bio !== undefined) {
+    tutorFields.push('bio = ?');
+    tutorValues.push(normalizeOptionalString(req.body.bio));
+  }
+  if (req.body.education !== undefined) {
+    tutorFields.push('education = ?');
+    tutorValues.push(normalizeOptionalString(req.body.education));
+  }
+  if (req.body.experience_years !== undefined) {
+    tutorFields.push('experience_years = ?');
+    tutorValues.push(normalizeNumber(req.body.experience_years, 0));
+  }
+  if (req.body.online_hourly !== undefined) {
+    tutorFields.push('online_hourly = ?');
+    tutorValues.push(normalizeNumber(req.body.online_hourly, 0));
+  }
+  if (req.body.offline_hourly !== undefined) {
+    tutorFields.push('offline_hourly = ?');
+    tutorValues.push(normalizeNumber(req.body.offline_hourly, 0, { nullable: true }));
+  }
+  if (req.body.currency !== undefined) {
+    tutorFields.push('currency = ?');
+    tutorValues.push(normalizeTrimmedString(req.body.currency).toUpperCase() || 'USD');
+  }
+  if (req.body.teaching_style !== undefined) {
+    tutorFields.push('teaching_style = ?');
+    tutorValues.push(normalizeOptionalString(req.body.teaching_style));
+  }
+  if (req.body.gender !== undefined) {
+    tutorFields.push('gender = ?');
+    tutorValues.push(normalizeOptionalString(req.body.gender));
+  }
+  if (req.body.subjects !== undefined) {
+    tutorFields.push('subjects = ?');
+    tutorValues.push(JSON.stringify(normalizeStringArray(req.body.subjects)));
+  }
+  if (req.body.levels !== undefined) {
+    tutorFields.push('levels = ?');
+    tutorValues.push(JSON.stringify(normalizeStringArray(req.body.levels)));
+  }
+  if (req.body.languages !== undefined) {
+    tutorFields.push('languages = ?');
+    tutorValues.push(JSON.stringify(normalizeStringArray(req.body.languages)));
+  }
+  if (req.body.service_areas !== undefined) {
+    tutorFields.push('service_areas = ?');
+    tutorValues.push(JSON.stringify(normalizeStringArray(req.body.service_areas)));
+  }
+  if (req.body.availability !== undefined) {
+    tutorFields.push('availability = ?');
+    tutorValues.push(JSON.stringify(normalizeJsonArray(req.body.availability)));
+  }
+  if (req.body.packages !== undefined) {
+    tutorFields.push('packages = ?');
+    tutorValues.push(JSON.stringify(normalizeJsonArray(req.body.packages)));
+  }
+  if (req.body.online_available !== undefined) {
+    tutorFields.push('online_available = ?');
+    tutorValues.push(normalizeBoolean(req.body.online_available, true));
+  }
+  if (req.body.offline_available !== undefined) {
+    tutorFields.push('offline_available = ?');
+    tutorValues.push(normalizeBoolean(req.body.offline_available, false));
+  }
+  if (req.body.open_to_work !== undefined) {
+    tutorFields.push('open_to_work = ?');
+    tutorValues.push(normalizeBoolean(req.body.open_to_work, false));
+  }
+  if (req.body.profile_photo_url !== undefined) {
+    tutorFields.push('profile_photo_url = ?');
+    tutorValues.push(toStoredUploadPath(req.body.profile_photo_url));
+  }
+  if (req.body.verification_documents !== undefined) {
+    tutorFields.push('verification_documents = ?');
+    tutorValues.push(JSON.stringify(toStoredUploadDocuments(normalizeJsonArray(req.body.verification_documents))));
+  }
+  if (req.body.verification_status !== undefined) {
+    const verificationStatus = normalizeTrimmedString(req.body.verification_status).toLowerCase();
+    if (!TUTOR_VERIFICATION_STATUSES.has(verificationStatus)) {
+      return res.status(400).json({ error: 'Invalid verification status', code: 'BAD_REQUEST' });
+    }
+    nextVerificationStatus = verificationStatus;
+    tutorFields.push('verification_status = ?');
+    tutorValues.push(verificationStatus);
+  }
+  if (nextVerificationStatus && nextVerificationStatus !== 'verified') {
+    tutorFields.push('verified_badge = ?');
+    tutorValues.push(false);
+  } else if (req.body.verified_badge !== undefined) {
+    tutorFields.push('verified_badge = ?');
+    tutorValues.push(normalizeBoolean(req.body.verified_badge, false));
+  }
+
+  if (profileFields.length === 0 && userFields.length === 0 && tutorFields.length === 0) {
+    return res.json(await loadAdminTutorById(id));
+  }
+
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    if (userFields.length > 0) {
+      await conn.query(`UPDATE users SET ${userFields.join(', ')} WHERE id = ?`, [...userValues, existing.user_id]);
+    }
+
+    if (profileFields.length > 0) {
+      await conn.query(`UPDATE profiles SET ${profileFields.join(', ')} WHERE user_id = ?`, [...profileValues, existing.user_id]);
+    }
+
+    if (tutorFields.length > 0) {
+      await conn.query(`UPDATE tutor_profiles SET ${tutorFields.join(', ')} WHERE id = ?`, [...tutorValues, id]);
+    }
+
+    await conn.commit();
+  } catch (error) {
+    await conn.rollback();
+    throw error;
+  } finally {
+    conn.release();
+  }
+
+  res.json(await loadAdminTutorById(id));
 }));
 
 router.delete('/tutors/:id', wrap(async (req, res) => {
@@ -299,10 +942,7 @@ router.delete('/tutors/:id', wrap(async (req, res) => {
   await db.query('DELETE FROM tutor_profiles WHERE id = ?', [id]);
 
   // Demote profile role if it was specifically 'tutor'
-  await db.query("UPDATE profiles SET role = 'user' WHERE user_id = ? AND role = 'tutor'", [tutor.user_id]);
-
-  // Remove tutor role entry
-  await db.query("DELETE FROM user_roles WHERE user_id = ? AND role = 'tutor'", [tutor.user_id]);
+  await db.query("UPDATE profiles SET role = 'student', is_parent = FALSE WHERE user_id = ? AND role = 'tutor'", [tutor.user_id]);
 
   res.json({ message: 'Tutor deleted' });
 }));
