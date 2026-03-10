@@ -4,6 +4,7 @@ export const courseCreateSchema = z.object({
   title: z.string().min(1),
   description: z.string().optional().nullable(),
   subject: z.string().optional().nullable(),
+  pricing_type: z.enum(['free', 'paid']).optional(),
   price: z.number().min(0),
   currency: z.string().optional().nullable(),
   max_students: z.number().int().min(1).optional(),

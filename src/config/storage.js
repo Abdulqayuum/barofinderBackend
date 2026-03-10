@@ -43,6 +43,17 @@ export function courseCoverUpload() {
   });
 }
 
+export function courseAssetUpload() {
+  return multer({
+    storage: makeStorage('course-assets'),
+    limits: { fileSize: parseInt(process.env.MAX_COURSE_ASSET_SIZE_MB || '100', 10) * 1024 * 1024 },
+    fileFilter: (req, file, cb) => {
+      if (file.mimetype === 'application/pdf' || file.mimetype.startsWith('video/')) cb(null, true);
+      else cb(new Error('Only video files and PDF documents are allowed'));
+    }
+  });
+}
+
 export function tutorDocumentUpload() {
   return multer({
     storage: makeStorage('tutor-documents'),

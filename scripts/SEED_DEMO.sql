@@ -59,13 +59,13 @@ INSERT INTO tutor_profiles (
 ON DUPLICATE KEY UPDATE verification_status = 'verified', verified_badge = TRUE, open_to_work = FALSE;
 
 INSERT INTO courses (
-  id, tutor_id, user_id, title, description, subject, price, currency, max_students,
+  id, tutor_id, user_id, title, description, subject, pricing_type, price, currency, max_students,
   is_published, status
 ) VALUES (
   @course_id, @tutor_profile_id, @tutor_user_id,
   'Algebra Foundations',
   'Core algebra concepts from basics to advanced problem solving.',
-  'Mathematics', 25.00, 'USD', 100,
+  'Mathematics', 'paid', 25.00, 'USD', 100,
   TRUE, 'active'
 )
 ON DUPLICATE KEY UPDATE is_published = TRUE, status = 'active';

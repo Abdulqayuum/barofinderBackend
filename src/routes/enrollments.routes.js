@@ -108,7 +108,7 @@ router.get('/my-learning', authMiddleware, wrap(async (req, res) => {
   const [rows] = await db.query(
     `SELECT
        e.*,
-       c.title, c.description, c.subject, c.price, c.currency, c.cover_image_url,
+       c.title, c.description, c.subject, c.pricing_type, c.price, c.currency, c.cover_image_url,
        (SELECT COUNT(*) FROM course_lessons WHERE course_id = c.id) AS lesson_count
      FROM course_enrollments e
      JOIN courses c ON c.id = e.course_id

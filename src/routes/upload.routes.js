@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import db from '../config/database.js';
 import { authMiddleware } from '../middleware/auth.js';
-import { tutorPhotoUpload, courseCoverUpload, tutorDocumentUpload } from '../config/storage.js';
+import { tutorPhotoUpload, courseCoverUpload, courseAssetUpload, tutorDocumentUpload } from '../config/storage.js';
 import { wrap } from '../middleware/error-handler.js';
 import { toPublicUploadDocuments, toPublicUploadUrl, toStoredUploadDocuments, toStoredUploadPath } from '../utils/uploads.js';
 
@@ -21,6 +21,14 @@ router.post('/course-cover', authMiddleware, courseCoverUpload().single('cover')
   if (!file) return res.status(400).json({ error: 'No file uploaded', code: 'VALIDATION_ERROR' });
 
   const path = toStoredUploadPath(`/uploads/course-covers/${file.filename}`);
+  res.json({ url: toPublicUploadUrl(path) });
+}));
+
+router.post('/course-asset', authMiddleware, courseAssetUpload().single('file'), wrap(async (req, res) => {
+  const file = req.file;
+  if (!file) return res.status(400).json({ error: 'No file uploaded', code: 'VALIDATION_ERROR' });
+
+  const path = toStoredUploadPath(`/uploads/course-assets/${file.filename}`);
   res.json({ url: toPublicUploadUrl(path) });
 }));
 

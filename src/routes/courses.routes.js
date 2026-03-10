@@ -10,11 +10,53 @@ import { toPublicUploadUrl, toStoredUploadPath } from '../utils/uploads.js';
 
 const router = Router();
 
+function toNumericPrice(value) {
+  const numeric = Number(value ?? 0);
+  return Number.isFinite(numeric) ? numeric : 0;
+}
+
+function resolvePricingType(course) {
+  if (course?.pricing_type === 'free' || course?.pricing_type === 'paid') {
+    return course.pricing_type;
+  }
+
+  return toNumericPrice(course?.price) > 0 ? 'paid' : 'free';
+}
+
+function normalizeCoursePayload(payload, existingCourse = null) {
+  const hasPrice = Object.prototype.hasOwnProperty.call(payload, 'price');
+  const hasPricingType = Object.prototype.hasOwnProperty.call(payload, 'pricing_type');
+
+  if (!hasPrice && !hasPricingType) {
+    return { payload };
+  }
+
+  const nextPrice = hasPrice ? toNumericPrice(payload.price) : toNumericPrice(existingCourse?.price);
+  const pricing_type = hasPricingType
+    ? payload.pricing_type
+    : hasPrice
+      ? (nextPrice > 0 ? 'paid' : 'free')
+      : resolvePricingType(existingCourse);
+
+  if (pricing_type === 'paid' && nextPrice <= 0) {
+    return { error: 'Paid courses must have a price greater than 0' };
+  }
+
+  return {
+    payload: {
+      ...payload,
+      pricing_type,
+      price: pricing_type === 'free' ? 0 : nextPrice,
+    },
+  };
+}
+
 function toCourseResponse(course) {
   if (!course) return course;
 
   return {
     ...course,
+    pricing_type: resolvePricingType(course),
     cover_image_url: toPublicUploadUrl(course.cover_image_url),
     tutor_photo: toPublicUploadUrl(course.tutor_photo),
   };
@@ -28,6 +70,11 @@ router.get('/', wrap(async (req, res) => {
   if (req.query.subject) {
     filters.push('c.subject = ?');
     params.push(req.query.subject);
+  }
+
+  if (req.query.pricing_type === 'free' || req.query.pricing_type === 'paid') {
+    filters.push(`COALESCE(c.pricing_type, CASE WHEN c.price > 0 THEN 'paid' ELSE 'free' END) = ?`);
+    params.push(req.query.pricing_type);
   }
 
   if (req.query.q) {
@@ -106,15 +153,20 @@ router.get('/:id', wrap(async (req, res) => {
 }));
 
 router.post('/', authMiddleware, validateBody(courseCreateSchema), wrap(async (req, res) => {
-  const data = req.body;
+  const normalized = normalizeCoursePayload(req.body);
+  if (normalized.error) {
+    return res.status(400).json({ error: normalized.error, code: 'VALIDATION_ERROR' });
+  }
+
+  const data = normalized.payload;
   const [tutorRows] = await db.query('SELECT id FROM tutor_profiles WHERE user_id = ?', [req.user.id]);
   const tutor = tutorRows[0];
   if (!tutor) return res.status(403).json({ error: 'Tutor profile required', code: 'FORBIDDEN' });
 
   const courseId = uuid();
   await db.query(
-    `INSERT INTO courses (id, tutor_id, user_id, title, description, subject, price, currency, max_students, cover_image_url, is_published, status, start_date, end_date)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO courses (id, tutor_id, user_id, title, description, subject, pricing_type, price, currency, max_students, cover_image_url, is_published, status, start_date, end_date)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       courseId,
       tutor.id,
@@ -122,6 +174,7 @@ router.post('/', authMiddleware, validateBody(courseCreateSchema), wrap(async (r
       data.title,
       data.description || null,
       data.subject || null,
+      data.pricing_type,
       data.price,
       data.currency || 'USD',
       data.max_students || 20,
@@ -139,12 +192,17 @@ router.post('/', authMiddleware, validateBody(courseCreateSchema), wrap(async (r
 
 router.patch('/:id', authMiddleware, validateBody(courseUpdateSchema), wrap(async (req, res) => {
   const { id } = req.params;
-  const [rows] = await db.query('SELECT user_id FROM courses WHERE id = ?', [id]);
+  const [rows] = await db.query('SELECT user_id, price, pricing_type FROM courses WHERE id = ?', [id]);
   const course = rows[0];
   if (!course) return res.status(404).json({ error: 'Course not found', code: 'NOT_FOUND' });
   if (course.user_id !== req.user.id) return res.status(403).json({ error: 'Forbidden', code: 'FORBIDDEN' });
 
-  const updates = req.body;
+  const normalized = normalizeCoursePayload(req.body, course);
+  if (normalized.error) {
+    return res.status(400).json({ error: normalized.error, code: 'VALIDATION_ERROR' });
+  }
+
+  const updates = normalized.payload;
   const fields = [];
   const values = [];
 
