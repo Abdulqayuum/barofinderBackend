@@ -371,6 +371,12 @@ router.patch('/enrollments/:id', wrap(async (req, res) => {
   res.json(rows[0]);
 }));
 
+router.delete('/enrollments/:id', wrap(async (req, res) => {
+  const { id } = req.params;
+  await db.query('DELETE FROM course_enrollments WHERE id = ?', [id]);
+  res.json({ message: 'Enrollment deleted' });
+}));
+
 router.get('/reviews', wrap(async (_req, res) => {
   const [tutorReviews] = await db.query(
     `SELECT r.*, p.full_name AS student_name, tp_p.full_name AS tutor_name

@@ -104,6 +104,21 @@ router.patch('/enrollments/:id', authMiddleware, validateBody(enrollmentUpdateSc
   res.json(rows[0]);
 }));
 
+router.delete('/enrollments/:id', authMiddleware, wrap(async (req, res) => {
+  const { id } = req.params;
+
+  const [enrollRows] = await db.query('SELECT * FROM course_enrollments WHERE id = ?', [id]);
+  const enrollment = enrollRows[0];
+  if (!enrollment) return res.status(404).json({ error: 'Enrollment not found', code: 'NOT_FOUND' });
+
+  const [courseRows] = await db.query('SELECT user_id FROM courses WHERE id = ?', [enrollment.course_id]);
+  const course = courseRows[0];
+  if (!course || course.user_id !== req.user.id) return res.status(403).json({ error: 'Forbidden', code: 'FORBIDDEN' });
+
+  await db.query('DELETE FROM course_enrollments WHERE id = ?', [id]);
+  res.json({ message: 'Enrollment deleted' });
+}));
+
 router.get('/my-learning', authMiddleware, wrap(async (req, res) => {
   const [rows] = await db.query(
     `SELECT
