@@ -41,7 +41,7 @@ INSERT INTO tutor_profiles (
   id, user_id, bio, education, teaching_style, experience_years, gender,
   subjects, levels, languages, service_areas,
   online_available, offline_available, online_hourly, offline_hourly, currency,
-  availability, verification_status, verified_badge
+  availability, open_to_work, verification_status, verified_badge
 ) VALUES (
   @tutor_profile_id, @tutor_user_id,
   'Experienced math tutor for high school and university students.',
@@ -54,9 +54,9 @@ INSERT INTO tutor_profiles (
   JSON_ARRAY('Mogadishu'),
   TRUE, TRUE, 10.00, 15.00, 'USD',
   JSON_ARRAY(JSON_OBJECT('day','Monday','startTime','08:00','endTime','17:00')),
-  'verified', TRUE
+  FALSE, 'verified', TRUE
 )
-ON DUPLICATE KEY UPDATE verification_status = 'verified', verified_badge = TRUE;
+ON DUPLICATE KEY UPDATE verification_status = 'verified', verified_badge = TRUE, open_to_work = FALSE;
 
 INSERT INTO courses (
   id, tutor_id, user_id, title, description, subject, price, currency, max_students,

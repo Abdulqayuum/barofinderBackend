@@ -848,6 +848,7 @@ CREATE TABLE `tutor_profiles` (
   `packages` json DEFAULT (_utf8mb4'[]'),
   `availability` json DEFAULT (_utf8mb4'[]'),
   `profile_photo_url` text,
+  `open_to_work` tinyint(1) NOT NULL DEFAULT '0',
   `verification_status` varchar(20) NOT NULL DEFAULT 'pending',
   `verified_badge` tinyint(1) DEFAULT '0',
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,

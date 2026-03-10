@@ -24,5 +24,6 @@ export const upsertTutorSchema = z.object({
   packages: z.array(z.object({ sessions: z.number(), price: z.number() })).optional().nullable(),
   availability: z.array(availabilityItem).optional().nullable(),
   profile_photo_url: z.string().optional().nullable(),
+  open_to_work: z.boolean().optional(),
   verification_documents: z.array(z.any()).optional().nullable()
 });

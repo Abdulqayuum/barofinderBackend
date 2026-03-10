@@ -171,6 +171,7 @@ router.get('/tutors', wrap(async (_req, res) => {
 
   const tutors = rows.map((t) => ({
     ...t,
+    open_to_work: !!t.open_to_work,
     profile_photo_url: toPublicUploadUrl(t.profile_photo_url),
     subjects: parseJson(t.subjects),
     levels: parseJson(t.levels),
@@ -247,6 +248,7 @@ router.patch('/tutors/:id/verify', wrap(async (req, res) => {
   const [rows] = await db.query('SELECT * FROM tutor_profiles WHERE id = ?', [id]);
   res.json({
     ...rows[0],
+    open_to_work: !!rows[0]?.open_to_work,
     profile_photo_url: toPublicUploadUrl(rows[0]?.profile_photo_url),
     verification_documents: toPublicUploadDocuments(rows[0]?.verification_documents),
     badge_granted: grantBadge,
@@ -281,6 +283,7 @@ router.patch('/tutors/:id', wrap(async (req, res) => {
   const [rows] = await db.query('SELECT * FROM tutor_profiles WHERE id = ?', [id]);
   res.json({
     ...rows[0],
+    open_to_work: !!rows[0]?.open_to_work,
     profile_photo_url: toPublicUploadUrl(rows[0]?.profile_photo_url),
     verification_documents: toPublicUploadDocuments(rows[0]?.verification_documents),
   });

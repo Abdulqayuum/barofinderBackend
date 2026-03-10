@@ -14,6 +14,7 @@ function toTutorResponse(tutor) {
 
   return {
     ...tutor,
+    open_to_work: !!tutor.open_to_work,
     profile_photo_url: toPublicUploadUrl(tutor.profile_photo_url),
     photo: toPublicUploadUrl(tutor.photo),
     verification_documents: toPublicUploadDocuments(tutor.verification_documents),
@@ -46,6 +47,9 @@ function buildTutorFilters(query) {
   }
   if (query.online === 'true') {
     filters.push('tp.online_available = TRUE');
+  }
+  if (query.openToWork === 'true') {
+    filters.push('tp.open_to_work = TRUE');
   }
   if (query.minPrice) {
     filters.push('tp.online_hourly >= ?');
@@ -97,6 +101,7 @@ router.get('/', wrap(async (req, res) => {
       tp.availability,
       tp.teaching_style,
       tp.service_areas,
+      tp.open_to_work,
       tp.packages,
       COALESCE(AVG(r.rating), 0) AS rating,
       COUNT(r.id) AS review_count
@@ -144,6 +149,7 @@ router.get('/', wrap(async (req, res) => {
     availability: r.availability || [],
     teachingStyle: r.teaching_style,
     serviceAreas: r.service_areas || [],
+    openToWork: !!r.open_to_work,
     packages: r.packages || []
   }));
 
@@ -187,6 +193,7 @@ router.get('/:id', wrap(async (req, res) => {
       tp.availability,
       tp.teaching_style,
       tp.service_areas,
+      tp.open_to_work,
       tp.packages,
       COALESCE(AVG(r.rating), 0) AS rating,
       COUNT(r.id) AS review_count
@@ -225,6 +232,7 @@ router.get('/:id', wrap(async (req, res) => {
     availability: r.availability || [],
     teachingStyle: r.teaching_style,
     serviceAreas: r.service_areas || [],
+    openToWork: !!r.open_to_work,
     packages: r.packages || []
   });
 }));
@@ -252,6 +260,7 @@ router.post('/', authMiddleware, validateBody(upsertTutorSchema), wrap(async (re
     availability: JSON.stringify(data.availability || []),
     packages: JSON.stringify(data.packages || []),
     profile_photo_url: toStoredUploadPath(data.profile_photo_url),
+    open_to_work: data.open_to_work === true,
     verification_documents: data.verification_documents ? JSON.stringify(toStoredUploadDocuments(data.verification_documents)) : null
   };
 
@@ -260,12 +269,12 @@ router.post('/', authMiddleware, validateBody(upsertTutorSchema), wrap(async (re
       `UPDATE tutor_profiles SET
         bio = ?, education = ?, teaching_style = ?, experience_years = ?, gender = ?, subjects = ?,
         levels = ?, languages = ?, service_areas = ?, online_available = ?, offline_available = ?,
-        online_hourly = ?, offline_hourly = ?, currency = ?, availability = ?, packages = ?, profile_photo_url = ?, verification_documents = ?
+        online_hourly = ?, offline_hourly = ?, currency = ?, availability = ?, packages = ?, profile_photo_url = ?, open_to_work = ?, verification_documents = ?
        WHERE user_id = ?`,
       [
         payload.bio, payload.education, payload.teaching_style, payload.experience_years, payload.gender, payload.subjects,
         payload.levels, payload.languages, payload.service_areas, payload.online_available, payload.offline_available,
-        payload.online_hourly, payload.offline_hourly, payload.currency, payload.availability, payload.packages, payload.profile_photo_url, payload.verification_documents,
+        payload.online_hourly, payload.offline_hourly, payload.currency, payload.availability, payload.packages, payload.profile_photo_url, payload.open_to_work, payload.verification_documents,
         req.user.id
       ]
     );
@@ -273,8 +282,8 @@ router.post('/', authMiddleware, validateBody(upsertTutorSchema), wrap(async (re
     await db.query(
       `INSERT INTO tutor_profiles
        (user_id, bio, education, teaching_style, experience_years, gender, subjects, levels, languages, service_areas,
-        online_available, offline_available, online_hourly, offline_hourly, currency, availability, packages, profile_photo_url, verification_documents, verification_status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+        online_available, offline_available, online_hourly, offline_hourly, currency, availability, packages, profile_photo_url, open_to_work, verification_documents, verification_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
       [
         req.user.id,
         payload.bio,
@@ -294,6 +303,7 @@ router.post('/', authMiddleware, validateBody(upsertTutorSchema), wrap(async (re
         payload.availability,
         payload.packages,
         payload.profile_photo_url,
+        payload.open_to_work,
         payload.verification_documents
       ]
     );
