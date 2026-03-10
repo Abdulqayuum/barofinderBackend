@@ -5,8 +5,20 @@ import { validateBody } from '../middleware/validation.js';
 import { upsertTutorSchema } from '../schemas/tutor.schema.js';
 import { getPagination } from '../utils/pagination.js';
 import { wrap } from '../middleware/error-handler.js';
+import { toPublicUploadDocuments, toPublicUploadUrl, toStoredUploadDocuments, toStoredUploadPath } from '../utils/uploads.js';
 
 const router = Router();
+
+function toTutorResponse(tutor) {
+  if (!tutor) return tutor;
+
+  return {
+    ...tutor,
+    profile_photo_url: toPublicUploadUrl(tutor.profile_photo_url),
+    photo: toPublicUploadUrl(tutor.photo),
+    verification_documents: toPublicUploadDocuments(tutor.verification_documents),
+  };
+}
 
 function buildTutorFilters(query) {
   const filters = [];
@@ -112,7 +124,7 @@ router.get('/', wrap(async (req, res) => {
     id: r.id,
     userId: r.user_id,
     name: r.name || 'Tutor',
-    photo: r.photo,
+    photo: toPublicUploadUrl(r.photo),
     subjects: r.subjects || [],
     city: r.city,
     online: !!r.online,
@@ -147,7 +159,7 @@ router.get('/me', authMiddleware, wrap(async (req, res) => {
   const [rows] = await db.query('SELECT * FROM tutor_profiles WHERE user_id = ?', [req.user.id]);
   const tutor = rows[0];
   if (!tutor) return res.json(null);
-  res.json(tutor);
+  res.json(toTutorResponse(tutor));
 }));
 
 router.get('/:id', wrap(async (req, res) => {
@@ -193,7 +205,7 @@ router.get('/:id', wrap(async (req, res) => {
     id: r.id,
     userId: r.user_id,
     name: r.name || 'Tutor',
-    photo: r.photo,
+    photo: toPublicUploadUrl(r.photo),
     subjects: r.subjects || [],
     city: r.city,
     online: !!r.online,
@@ -239,8 +251,8 @@ router.post('/', authMiddleware, validateBody(upsertTutorSchema), wrap(async (re
     currency: data.currency || 'USD',
     availability: JSON.stringify(data.availability || []),
     packages: JSON.stringify(data.packages || []),
-    profile_photo_url: data.profile_photo_url || null,
-    verification_documents: data.verification_documents ? JSON.stringify(data.verification_documents) : null
+    profile_photo_url: toStoredUploadPath(data.profile_photo_url),
+    verification_documents: data.verification_documents ? JSON.stringify(toStoredUploadDocuments(data.verification_documents)) : null
   };
 
   if (existing) {
@@ -288,7 +300,7 @@ router.post('/', authMiddleware, validateBody(upsertTutorSchema), wrap(async (re
   }
 
   const [updated] = await db.query('SELECT * FROM tutor_profiles WHERE user_id = ?', [req.user.id]);
-  res.json(updated[0]);
+  res.json(toTutorResponse(updated[0]));
 }));
 
 router.patch('/:id', authMiddleware, validateBody(upsertTutorSchema.partial()), wrap(async (req, res) => {
@@ -306,7 +318,14 @@ router.patch('/:id', authMiddleware, validateBody(upsertTutorSchema.partial()), 
 
   for (const key of Object.keys(updates)) {
     fields.push(`${key} = ?`);
-    const val = jsonFields.has(key) ? JSON.stringify(updates[key]) : updates[key];
+    let val = updates[key];
+    if (jsonFields.has(key)) {
+      val = JSON.stringify(updates[key]);
+    } else if (key === 'profile_photo_url') {
+      val = toStoredUploadPath(updates[key]);
+    } else if (key === 'verification_documents') {
+      val = JSON.stringify(toStoredUploadDocuments(updates[key]));
+    }
     values.push(val);
   }
 
@@ -315,7 +334,7 @@ router.patch('/:id', authMiddleware, validateBody(upsertTutorSchema.partial()), 
   values.push(id);
   await db.query(`UPDATE tutor_profiles SET ${fields.join(', ')} WHERE id = ?`, values);
   const [updated] = await db.query('SELECT * FROM tutor_profiles WHERE id = ?', [id]);
-  res.json(updated[0]);
+  res.json(toTutorResponse(updated[0]));
 }));
 
 export default router;

@@ -4,6 +4,7 @@ import { authMiddleware } from '../middleware/auth.js';
 import { requireRole } from '../middleware/roles.js';
 import { wrap } from '../middleware/error-handler.js';
 import { v4 as uuid } from 'uuid';
+import { toPublicUploadDocuments, toPublicUploadUrl, toStoredUploadDocuments, toStoredUploadPath } from '../utils/uploads.js';
 
 const router = Router();
 
@@ -170,13 +171,14 @@ router.get('/tutors', wrap(async (_req, res) => {
 
   const tutors = rows.map((t) => ({
     ...t,
+    profile_photo_url: toPublicUploadUrl(t.profile_photo_url),
     subjects: parseJson(t.subjects),
     levels: parseJson(t.levels),
     languages: parseJson(t.languages),
     service_areas: parseJson(t.service_areas),
     availability: parseJson(t.availability),
     packages: parseJson(t.packages),
-    verification_documents: parseJson(t.verification_documents),
+    verification_documents: toPublicUploadDocuments(parseJson(t.verification_documents)),
   }));
 
   res.json(tutors);
@@ -243,7 +245,12 @@ router.patch('/tutors/:id/verify', wrap(async (req, res) => {
   }
 
   const [rows] = await db.query('SELECT * FROM tutor_profiles WHERE id = ?', [id]);
-  res.json({ ...rows[0], badge_granted: grantBadge });
+  res.json({
+    ...rows[0],
+    profile_photo_url: toPublicUploadUrl(rows[0]?.profile_photo_url),
+    verification_documents: toPublicUploadDocuments(rows[0]?.verification_documents),
+    badge_granted: grantBadge,
+  });
 }));
 
 router.patch('/tutors/:id', wrap(async (req, res) => {
@@ -256,7 +263,14 @@ router.patch('/tutors/:id', wrap(async (req, res) => {
 
   for (const key of Object.keys(updates)) {
     fields.push(`${key} = ?`);
-    const val = jsonFields.has(key) ? JSON.stringify(updates[key]) : updates[key];
+    let val = updates[key];
+    if (jsonFields.has(key)) {
+      val = JSON.stringify(updates[key]);
+    } else if (key === 'profile_photo_url') {
+      val = toStoredUploadPath(updates[key]);
+    } else if (key === 'verification_documents') {
+      val = JSON.stringify(toStoredUploadDocuments(updates[key]));
+    }
     values.push(val);
   }
 
@@ -265,7 +279,11 @@ router.patch('/tutors/:id', wrap(async (req, res) => {
   values.push(id);
   await db.query(`UPDATE tutor_profiles SET ${fields.join(', ')} WHERE id = ?`, values);
   const [rows] = await db.query('SELECT * FROM tutor_profiles WHERE id = ?', [id]);
-  res.json(rows[0]);
+  res.json({
+    ...rows[0],
+    profile_photo_url: toPublicUploadUrl(rows[0]?.profile_photo_url),
+    verification_documents: toPublicUploadDocuments(rows[0]?.verification_documents),
+  });
 }));
 
 router.delete('/tutors/:id', wrap(async (req, res) => {
@@ -324,7 +342,10 @@ router.get('/courses', wrap(async (_req, res) => {
      JOIN profiles p ON p.user_id = c.user_id
      ORDER BY c.created_at DESC`
   );
-  res.json(rows);
+  res.json(rows.map((row) => ({
+    ...row,
+    cover_image_url: toPublicUploadUrl(row.cover_image_url),
+  })));
 }));
 
 router.get('/enrollments', wrap(async (_req, res) => {

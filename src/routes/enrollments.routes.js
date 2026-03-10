@@ -5,6 +5,7 @@ import { authMiddleware } from '../middleware/auth.js';
 import { validateBody } from '../middleware/validation.js';
 import { enrollmentCreateSchema, enrollmentUpdateSchema } from '../schemas/enrollment.schema.js';
 import { wrap } from '../middleware/error-handler.js';
+import { toPublicUploadUrl } from '../utils/uploads.js';
 
 const router = Router();
 
@@ -115,7 +116,10 @@ router.get('/my-learning', authMiddleware, wrap(async (req, res) => {
      ORDER BY e.created_at DESC`,
     [req.user.id]
   );
-  res.json(rows);
+  res.json(rows.map((row) => ({
+    ...row,
+    cover_image_url: toPublicUploadUrl(row.cover_image_url),
+  })));
 }));
 
 export default router;

@@ -6,8 +6,19 @@ import { validateBody } from '../middleware/validation.js';
 import { courseCreateSchema, courseUpdateSchema } from '../schemas/course.schema.js';
 import { getPagination } from '../utils/pagination.js';
 import { wrap } from '../middleware/error-handler.js';
+import { toPublicUploadUrl, toStoredUploadPath } from '../utils/uploads.js';
 
 const router = Router();
+
+function toCourseResponse(course) {
+  if (!course) return course;
+
+  return {
+    ...course,
+    cover_image_url: toPublicUploadUrl(course.cover_image_url),
+    tutor_photo: toPublicUploadUrl(course.tutor_photo),
+  };
+}
 
 router.get('/', wrap(async (req, res) => {
   const { page, limit, offset } = getPagination(req.query);
@@ -45,7 +56,7 @@ router.get('/', wrap(async (req, res) => {
 
   const total = countRows[0]?.total || 0;
   res.json({
-    courses: rows,
+    courses: rows.map(toCourseResponse),
     total,
     page,
     totalPages: Math.ceil(total / limit)
@@ -57,7 +68,7 @@ router.get('/my-courses', authMiddleware, wrap(async (req, res) => {
     'SELECT * FROM courses WHERE user_id = ? ORDER BY created_at DESC',
     [req.user.id]
   );
-  res.json(rows);
+  res.json(rows.map(toCourseResponse));
 }));
 
 router.get('/:id', wrap(async (req, res) => {
@@ -82,8 +93,8 @@ router.get('/:id', wrap(async (req, res) => {
   const avgNum = typeof avg === 'string' ? parseFloat(avg) : Number(avg);
 
   res.json({
-    course,
-    tutor,
+    course: toCourseResponse(course),
+    tutor: tutor ? { ...tutor, photo: toPublicUploadUrl(tutor.photo) } : null,
     lessons,
     quizzes,
     enrollment_count: enrollCount[0]?.count || 0,
@@ -114,7 +125,7 @@ router.post('/', authMiddleware, validateBody(courseCreateSchema), wrap(async (r
       data.price,
       data.currency || 'USD',
       data.max_students || 20,
-      data.cover_image_url || null,
+      toStoredUploadPath(data.cover_image_url),
       data.is_published || false,
       data.status || 'draft',
       data.start_date || null,
@@ -123,7 +134,7 @@ router.post('/', authMiddleware, validateBody(courseCreateSchema), wrap(async (r
   );
 
   const [rows] = await db.query('SELECT * FROM courses WHERE id = ?', [courseId]);
-  res.status(201).json(rows[0]);
+  res.status(201).json(toCourseResponse(rows[0]));
 }));
 
 router.patch('/:id', authMiddleware, validateBody(courseUpdateSchema), wrap(async (req, res) => {
@@ -139,14 +150,14 @@ router.patch('/:id', authMiddleware, validateBody(courseUpdateSchema), wrap(asyn
 
   for (const key of Object.keys(updates)) {
     fields.push(`${key} = ?`);
-    values.push(updates[key]);
+    values.push(key === 'cover_image_url' ? toStoredUploadPath(updates[key]) : updates[key]);
   }
   if (fields.length === 0) return res.json({ message: 'No changes' });
 
   values.push(id);
   await db.query(`UPDATE courses SET ${fields.join(', ')} WHERE id = ?`, values);
   const [updated] = await db.query('SELECT * FROM courses WHERE id = ?', [id]);
-  res.json(updated[0]);
+  res.json(toCourseResponse(updated[0]));
 }));
 
 router.delete('/:id', authMiddleware, wrap(async (req, res) => {
