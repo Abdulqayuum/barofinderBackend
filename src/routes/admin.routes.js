@@ -240,6 +240,7 @@ function getInstitutionApprovalNotification(status) {
 router.get('/overview', wrap(async (_req, res) => {
   const [[totalUsers]] = await db.query('SELECT COUNT(*) AS total_users FROM profiles');
   const [[totalTutors]] = await db.query('SELECT COUNT(*) AS total_tutors FROM tutor_profiles');
+  const [[totalInstitutions]] = await db.query('SELECT COUNT(*) AS total_institutions FROM institution_profiles');
   const [[pendingTutorApprovals]] = await db.query("SELECT COUNT(*) AS pending_approvals FROM tutor_profiles WHERE verification_status = 'pending'");
   const [[pendingInstitutionApprovals]] = await db.query("SELECT COUNT(*) AS pending_approvals FROM institution_profiles WHERE approval_status = 'pending'");
   const [[activeSubs]] = await db.query("SELECT COUNT(*) AS active_subs, COALESCE(SUM(amount), 0) AS total_revenue FROM subscriptions WHERE status = 'active'");
@@ -271,6 +272,7 @@ router.get('/overview', wrap(async (_req, res) => {
   res.json({
     total_users: totalUsers.total_users,
     total_tutors: totalTutors.total_tutors,
+    total_institutions: totalInstitutions.total_institutions,
     pending_approvals: pendingTutorApprovals.pending_approvals + pendingInstitutionApprovals.pending_approvals,
     active_subs: activeSubs.active_subs,
     total_revenue: activeSubs.total_revenue,
