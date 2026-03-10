@@ -29,8 +29,8 @@ const server = http.createServer(app);
 const defaultAllowedOrigins = [
   'http://localhost:5173',
   'http://localhost:8080',
+  'https://www.qalintech.shop',
   'https://qalintech.shop',
-  'https://coin.qalintech.shop',
 ];
 
 const envAllowedOrigins = (process.env.CORS_ORIGIN || '')
