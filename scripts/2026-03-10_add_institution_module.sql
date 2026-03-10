@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS institution_profiles (
   institution_name     VARCHAR(255) NOT NULL,
   institution_type     VARCHAR(30)  NOT NULL DEFAULT 'school',
   description          TEXT         DEFAULT NULL,
+  logo_url             TEXT         DEFAULT NULL,
   website_url          TEXT         DEFAULT NULL,
   address              TEXT         DEFAULT NULL,
   city                 VARCHAR(100) DEFAULT NULL,
@@ -38,6 +39,24 @@ SET @institution_profiles_add_approval_status_sql := IF(
 PREPARE stmt_add_institution_approval_status FROM @institution_profiles_add_approval_status_sql;
 EXECUTE stmt_add_institution_approval_status;
 DEALLOCATE PREPARE stmt_add_institution_approval_status;
+
+SET @institution_profiles_has_logo_url := (
+  SELECT COUNT(*)
+  FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'institution_profiles'
+    AND COLUMN_NAME = 'logo_url'
+);
+
+SET @institution_profiles_add_logo_url_sql := IF(
+  @institution_profiles_has_logo_url = 0,
+  'ALTER TABLE institution_profiles ADD COLUMN logo_url TEXT DEFAULT NULL AFTER description',
+  'SELECT 1'
+);
+
+PREPARE stmt_add_institution_logo_url FROM @institution_profiles_add_logo_url_sql;
+EXECUTE stmt_add_institution_logo_url;
+DEALLOCATE PREPARE stmt_add_institution_logo_url;
 
 SET @institution_profiles_has_approval_index := (
   SELECT COUNT(*)

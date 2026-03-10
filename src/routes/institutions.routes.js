@@ -91,7 +91,7 @@ function toInstitutionProfileResponse(profile) {
     approval_status: INSTITUTION_APPROVAL_STATUSES.has(profile.approval_status) ? profile.approval_status : 'pending',
     institution_name: profile.institution_name || profile.full_name,
     city: profile.city || null,
-    logo_url: toPublicUploadUrl(profile.institution_logo_url || profile.profile_photo_url || null),
+    logo_url: toPublicUploadUrl(profile.logo_url || profile.institution_logo_url || null),
     contact_email: profile.contact_email || profile.email || null,
     contact_phone: profile.contact_phone || profile.phone || null,
   };
@@ -138,7 +138,7 @@ function toInstitutionJobResponse(job) {
 
 async function loadInstitutionProfileByUserId(userId, executor = db) {
   const [rows] = await executor.query(
-    `SELECT ip.*, p.full_name, p.email, p.phone, p.profile_photo_url AS institution_logo_url
+    `SELECT ip.*, p.full_name, p.email, p.phone
      FROM institution_profiles ip
      JOIN profiles p ON p.user_id = ip.user_id
      WHERE ip.user_id = ?
@@ -157,8 +157,8 @@ async function loadInstitutionJobsByUserId(userId, executor = db) {
       COALESCE(ip.city, p.city) AS institution_city,
       ip.institution_name,
       ip.institution_type,
+      ip.logo_url AS institution_logo_url,
       ip.website_url,
-      p.profile_photo_url AS institution_logo_url,
       ip.contact_email AS institution_contact_email,
       ip.contact_phone AS institution_contact_phone
      FROM institution_jobs ij
@@ -236,8 +236,8 @@ router.get('/jobs', authMiddleware, wrap(async (req, res) => {
       COALESCE(ip.city, p.city) AS institution_city,
       ip.institution_name,
       ip.institution_type,
+      ip.logo_url AS institution_logo_url,
       ip.website_url,
-      p.profile_photo_url AS institution_logo_url,
       ip.contact_email AS institution_contact_email,
       ip.contact_phone AS institution_contact_phone
     FROM institution_jobs ij

@@ -61,8 +61,13 @@ router.post('/institution-logo', authMiddleware, withDynamicUpload(institutionLo
     return res.status(403).json({ error: 'Institution account required', code: 'FORBIDDEN' });
   }
 
+  const [institutions] = await db.query('SELECT id FROM institution_profiles WHERE user_id = ? LIMIT 1', [req.user.id]);
+  if (!institutions[0]) {
+    return res.status(400).json({ error: 'Save institution profile first', code: 'BAD_REQUEST' });
+  }
+
   const path = toStoredUploadPath(`/uploads/institution-logos/${file.filename}`);
-  await db.query('UPDATE profiles SET profile_photo_url = ? WHERE user_id = ?', [path, req.user.id]);
+  await db.query('UPDATE institution_profiles SET logo_url = ? WHERE user_id = ?', [path, req.user.id]);
   res.json({ url: toPublicUploadUrl(path) });
 }));
 
