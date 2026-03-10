@@ -26,6 +26,18 @@ import uploadRoutes from './routes/upload.routes.js';
 const app = express();
 const server = http.createServer(app);
 
+const trustProxyValue = process.env.TRUST_PROXY;
+if (trustProxyValue === 'true') {
+  app.set('trust proxy', true);
+} else if (trustProxyValue === 'false') {
+  app.set('trust proxy', false);
+} else if (trustProxyValue && !Number.isNaN(Number(trustProxyValue))) {
+  app.set('trust proxy', Number(trustProxyValue));
+} else if (process.env.NODE_ENV === 'production') {
+  // Reverse proxies terminate HTTPS for the public site before forwarding to Node.
+  app.set('trust proxy', 1);
+}
+
 const defaultAllowedOrigins = [
   'http://localhost:5173',
   'http://localhost:8080',

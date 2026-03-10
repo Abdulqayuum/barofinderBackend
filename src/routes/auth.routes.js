@@ -5,9 +5,11 @@ import { v4 as uuid } from 'uuid';
 import db from '../config/database.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { validateBody } from '../middleware/validation.js';
+import { authRateLimiter } from '../middleware/rate-limit.js';
 import { loginSchema, refreshSchema, resetPasswordSchema, signupSchema, updatePasswordSchema, requestOtpSchema } from '../schemas/auth.schema.js';
 import { wrap } from '../middleware/error-handler.js';
 import { sendOTP } from '../utils/mailer.js';
+import { toPublicUploadUrl } from '../utils/uploads.js';
 
 const router = Router();
 
@@ -15,6 +17,14 @@ const JWT_SECRET = process.env.JWT_SECRET || 'change-me';
 const JWT_EXPIRES_IN = parseInt(process.env.JWT_EXPIRES_IN || '3600', 10);
 const BCRYPT_SALT_ROUNDS = parseInt(process.env.BCRYPT_SALT_ROUNDS || '10', 10);
 const EMAIL_VERIFICATION_REQUIRED = process.env.EMAIL_VERIFICATION_REQUIRED === 'true';
+
+function toAuthProfileResponse(profile) {
+  if (!profile) return null;
+  return {
+    ...profile,
+    profile_photo_url: toPublicUploadUrl(profile.profile_photo_url),
+  };
+}
 
 function signAccessToken(userId, email) {
   return jwt.sign({ sub: userId, email, type: 'access' }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
@@ -33,7 +43,7 @@ async function verifyPassword(inputPassword, storedPasswordHash) {
   return bcrypt.compare(inputPassword, storedPasswordHash);
 }
 
-router.post('/request-signup-otp', validateBody(requestOtpSchema), wrap(async (req, res) => {
+router.post('/request-signup-otp', authRateLimiter, validateBody(requestOtpSchema), wrap(async (req, res) => {
   const { email } = req.body;
   const [existing] = await db.query('SELECT id FROM users WHERE email = ?', [email]);
   if (existing.length > 0) {
@@ -57,7 +67,7 @@ router.post('/request-signup-otp', validateBody(requestOtpSchema), wrap(async (r
   res.json({ message: 'A verification code was sent.' });
 }));
 
-router.post('/signup', validateBody(signupSchema), wrap(async (req, res) => {
+router.post('/signup', authRateLimiter, validateBody(signupSchema), wrap(async (req, res) => {
   const data = req.body;
 
   const [existing] = await db.query('SELECT id FROM users WHERE email = ?', [data.email]);
@@ -128,7 +138,7 @@ router.post('/signup', validateBody(signupSchema), wrap(async (req, res) => {
   });
 }));
 
-router.post('/login', validateBody(loginSchema), wrap(async (req, res) => {
+router.post('/login', authRateLimiter, validateBody(loginSchema), wrap(async (req, res) => {
   const { email, password } = req.body;
   const [rows] = await db.query('SELECT * FROM users WHERE email = ?', [email]);
   const user = rows[0];
@@ -147,16 +157,21 @@ router.post('/login', validateBody(loginSchema), wrap(async (req, res) => {
     return res.status(403).json({ error: 'Account suspended', code: 'FORBIDDEN' });
   }
 
+  const [fullProfiles] = await db.query('SELECT * FROM profiles WHERE user_id = ?', [user.id]);
+  const fullProfile = fullProfiles[0] || null;
+  const [roles] = await db.query('SELECT role FROM user_roles WHERE user_id = ?', [user.id]);
   const accessToken = signAccessToken(user.id, user.email);
   const refreshToken = signRefreshToken(user.id);
 
   res.json({
     user: { id: user.id, email: user.email },
+    profile: toAuthProfileResponse(fullProfile),
+    roles: roles.map((r) => r.role),
     session: { access_token: accessToken, refresh_token: refreshToken, expires_in: JWT_EXPIRES_IN }
   });
 }));
 
-router.post('/refresh', validateBody(refreshSchema), wrap(async (req, res) => {
+router.post('/refresh', authRateLimiter, validateBody(refreshSchema), wrap(async (req, res) => {
   const { refresh_token } = req.body;
   try {
     const payload = jwt.verify(refresh_token, JWT_SECRET);
@@ -175,7 +190,7 @@ router.post('/logout', authMiddleware, wrap(async (_req, res) => {
   res.json({ message: 'Signed out' });
 }));
 
-router.post('/reset-password', validateBody(resetPasswordSchema), wrap(async (req, res) => {
+router.post('/reset-password', authRateLimiter, validateBody(resetPasswordSchema), wrap(async (req, res) => {
   const { email } = req.body;
   const token = uuid();
   const expires = new Date(Date.now() + 1000 * 60 * 30);
@@ -202,7 +217,7 @@ router.post('/update-password', authMiddleware, validateBody(updatePasswordSchem
   res.json({ message: 'Password updated' });
 }));
 
-router.post('/confirm-reset', wrap(async (req, res) => {
+router.post('/confirm-reset', authRateLimiter, wrap(async (req, res) => {
   const { token, password } = req.body;
   const [rows] = await db.query(
     'SELECT id FROM users WHERE reset_token = ? AND reset_token_expires > NOW()',
@@ -226,7 +241,7 @@ router.get('/me', authMiddleware, wrap(async (req, res) => {
   const [roles] = await db.query('SELECT role FROM user_roles WHERE user_id = ?', [req.user.id]);
   res.json({
     user: { id: req.user.id, email: req.user.email },
-    profile: profile || null,
+    profile: toAuthProfileResponse(profile),
     roles: roles.map(r => r.role)
   });
 }));
