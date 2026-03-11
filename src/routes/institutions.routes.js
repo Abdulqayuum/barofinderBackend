@@ -4,6 +4,7 @@ import db from '../config/database.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { validateBody } from '../middleware/validation.js';
 import {
+  institutionJobApplicationArchiveSchema,
   institutionJobApplicationCreateSchema,
   institutionJobApplicationUpdateSchema,
   institutionJobSchema,
@@ -89,6 +90,13 @@ function normalizeDateTime(value) {
   return normalized;
 }
 
+function normalizeOptionalPositiveInt(value) {
+  if (value == null || value === '') return null;
+  const numeric = Number(value);
+  if (!Number.isInteger(numeric) || numeric < 1) return null;
+  return numeric;
+}
+
 function normalizeJobApplicationStatus(status) {
   return JOB_APPLICATION_STATUSES.has(status) ? status : 'pending';
 }
@@ -129,10 +137,17 @@ function toInstitutionJobResponse(job) {
     application_email: job.application_email || job.institution_contact_email || null,
     application_phone: job.application_phone || job.institution_contact_phone || null,
     application_url: job.application_url || null,
+    max_applications: normalizeOptionalPositiveInt(job.max_applications),
     expires_at: job.expires_at || null,
     is_active: !!job.is_active,
     application_count: Number(job.application_count || 0),
     pending_application_count: Number(job.pending_application_count || 0),
+    remaining_application_slots: normalizeOptionalPositiveInt(job.max_applications) == null
+      ? null
+      : Math.max(normalizeOptionalPositiveInt(job.max_applications) - Number(job.application_count || 0), 0),
+    application_limit_reached:
+      normalizeOptionalPositiveInt(job.max_applications) != null
+      && Number(job.application_count || 0) >= normalizeOptionalPositiveInt(job.max_applications),
     current_user_application_id: job.current_user_application_id || null,
     current_user_application_status: job.current_user_application_status
       ? normalizeJobApplicationStatus(job.current_user_application_status)
@@ -168,6 +183,8 @@ function toInstitutionJobApplicationResponse(application) {
     status: normalizeJobApplicationStatus(application.status),
     institution_notes: application.institution_notes || null,
     reviewed_at: application.reviewed_at || null,
+    archived_by_institution: !!application.archived_by_institution,
+    archived_at: application.archived_at || null,
     created_at: application.created_at,
     updated_at: application.updated_at,
     job: {
@@ -237,6 +254,7 @@ async function loadInstitutionJobsByUserId(userId, executor = db) {
          COUNT(*) AS application_count,
          SUM(CASE WHEN status IN ('pending', 'documents_requested') THEN 1 ELSE 0 END) AS pending_application_count
        FROM institution_job_applications
+       WHERE archived_by_institution = FALSE
        GROUP BY job_id
      ) app_counts ON app_counts.job_id = ij.id
      WHERE ij.user_id = ?
@@ -280,7 +298,10 @@ async function loadInstitutionJobApplicationsByUserId(userId, executor = db) {
      JOIN tutor_profiles tp ON tp.id = ija.tutor_profile_id
      JOIN profiles tutor ON tutor.user_id = ija.tutor_user_id
      WHERE ija.institution_user_id = ?
-     ORDER BY FIELD(ija.status, 'pending', 'documents_requested', 'approved', 'rejected'), ija.created_at DESC`,
+     ORDER BY
+       ija.archived_by_institution ASC,
+       FIELD(ija.status, 'pending', 'documents_requested', 'approved', 'rejected'),
+       ija.created_at DESC`,
     [userId]
   );
 
@@ -410,6 +431,7 @@ router.get('/jobs', authMiddleware, wrap(async (req, res) => {
         COUNT(*) AS application_count,
         SUM(CASE WHEN status IN ('pending', 'documents_requested') THEN 1 ELSE 0 END) AS pending_application_count
       FROM institution_job_applications
+      WHERE archived_by_institution = FALSE
       GROUP BY job_id
     ) app_counts ON app_counts.job_id = ij.id
     LEFT JOIN institution_job_applications current_app
@@ -585,14 +607,15 @@ router.post('/jobs', authMiddleware, institutionOnly, approvedInstitutionOnly, v
     application_email: normalizeOptionalString(data.application_email),
     application_phone: normalizeOptionalString(data.application_phone),
     application_url: normalizeOptionalString(data.application_url),
+    max_applications: normalizeOptionalPositiveInt(data.max_applications),
     expires_at: normalizeDateTime(data.expires_at),
     is_active: data.is_active !== false,
   };
 
   await db.query(
     `INSERT INTO institution_jobs
-     (id, institution_id, user_id, title, description, subject, level, city, employment_type, work_mode, salary_amount, salary_currency, salary_period, requirements, benefits, application_email, application_phone, application_url, expires_at, is_active)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     (id, institution_id, user_id, title, description, subject, level, city, employment_type, work_mode, salary_amount, salary_currency, salary_period, requirements, benefits, application_email, application_phone, application_url, max_applications, expires_at, is_active)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       jobId,
       institution.id,
@@ -612,6 +635,7 @@ router.post('/jobs', authMiddleware, institutionOnly, approvedInstitutionOnly, v
       payload.application_email,
       payload.application_phone,
       payload.application_url,
+      payload.max_applications,
       payload.expires_at,
       payload.is_active,
     ]
@@ -643,10 +667,17 @@ router.post('/jobs/:id/apply', authMiddleware, validateBody(institutionJobApplic
       ij.title,
       ij.is_active,
       ij.expires_at,
+      ij.max_applications,
       ij.institution_id,
       ij.user_id AS institution_user_id,
       ip.approval_status,
-      ip.institution_name
+      ip.institution_name,
+      (
+        SELECT COUNT(*)
+        FROM institution_job_applications active_applications
+        WHERE active_applications.job_id = ij.id
+          AND active_applications.archived_by_institution = FALSE
+      ) AS active_application_count
      FROM institution_jobs ij
      JOIN institution_profiles ip ON ip.id = ij.institution_id
      WHERE ij.id = ?
@@ -659,6 +690,9 @@ router.post('/jobs/:id/apply', authMiddleware, validateBody(institutionJobApplic
   }
   if (!job.is_active || (job.expires_at && new Date(job.expires_at).getTime() < Date.now())) {
     return res.status(400).json({ error: 'This job is no longer accepting applications.', code: 'BAD_REQUEST' });
+  }
+  if (normalizeOptionalPositiveInt(job.max_applications) != null && Number(job.active_application_count || 0) >= normalizeOptionalPositiveInt(job.max_applications)) {
+    return res.status(409).json({ error: 'This job has reached its application limit.', code: 'CONFLICT' });
   }
   if (job.approval_status !== 'approved') {
     return res.status(400).json({ error: 'This institution is not currently accepting applications.', code: 'BAD_REQUEST' });
@@ -807,6 +841,39 @@ router.patch('/job-applications/:id', authMiddleware, institutionOnly, validateB
   res.json(await loadInstitutionJobApplicationByIdForInstitution(id, req.user.id));
 }));
 
+router.patch('/job-applications/:id/archive', authMiddleware, institutionOnly, validateBody(institutionJobApplicationArchiveSchema), wrap(async (req, res) => {
+  await assertPlatformWritable();
+
+  const { id } = req.params;
+  const existing = await loadInstitutionJobApplicationByIdForInstitution(id, req.user.id);
+  if (!existing) {
+    return res.status(404).json({ error: 'Application not found', code: 'NOT_FOUND' });
+  }
+
+  const archived = req.body.archived !== false;
+  await db.query(
+    `UPDATE institution_job_applications
+     SET archived_by_institution = ?, archived_at = ?
+     WHERE id = ?`,
+    [archived, archived ? new Date() : null, id]
+  );
+
+  res.json(await loadInstitutionJobApplicationByIdForInstitution(id, req.user.id));
+}));
+
+router.delete('/job-applications/:id', authMiddleware, institutionOnly, wrap(async (req, res) => {
+  await assertPlatformWritable();
+
+  const { id } = req.params;
+  const existing = await loadInstitutionJobApplicationByIdForInstitution(id, req.user.id);
+  if (!existing) {
+    return res.status(404).json({ error: 'Application not found', code: 'NOT_FOUND' });
+  }
+
+  await db.query('DELETE FROM institution_job_applications WHERE id = ? AND institution_user_id = ?', [id, req.user.id]);
+  res.json({ message: 'Application deleted' });
+}));
+
 router.patch('/jobs/:id', authMiddleware, institutionOnly, approvedInstitutionOnly, validateBody(institutionJobSchema.partial()), wrap(async (req, res) => {
   const { id } = req.params;
   const [rows] = await db.query('SELECT user_id FROM institution_jobs WHERE id = ? LIMIT 1', [id]);
@@ -848,6 +915,8 @@ router.patch('/jobs/:id', authMiddleware, institutionOnly, approvedInstitutionOn
       key === 'application_url'
     ) {
       value = normalizeOptionalString(value);
+    } else if (key === 'max_applications') {
+      value = normalizeOptionalPositiveInt(value);
     }
 
     fields.push(`${key} = ?`);

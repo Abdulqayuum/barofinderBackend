@@ -9,6 +9,22 @@ const transporter = nodemailer.createTransport({
     },
 });
 
+function getSenderAddress(value) {
+    if (typeof value !== 'string') return null;
+
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+
+    const match = trimmed.match(/<([^>]+)>/);
+    return (match?.[1] || trimmed).trim() || null;
+}
+
+function getSenderFrom() {
+    const configuredAddress = getSenderAddress(process.env.EMAIL_FROM || process.env.SMTP_FROM);
+    const senderAddress = configuredAddress || 'noreply@barofinder.com';
+    return `"Macalinhub" <${senderAddress}>`;
+}
+
 export const sendOTP = async (to, otp) => {
     if (!process.env.SMTP_USER) {
         console.log(`\n============================`);
@@ -18,7 +34,7 @@ export const sendOTP = async (to, otp) => {
     }
 
     const mailOptions = {
-        from: process.env.EMAIL_FROM || process.env.SMTP_FROM || '"BaroFinder Team" <noreply@barofinder.com>',
+        from: getSenderFrom(),
         to,
         subject: 'Your Verification Code',
         text: `Your verification code is: ${otp}`,

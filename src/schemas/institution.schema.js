@@ -33,6 +33,18 @@ const optionalNumber = z.preprocess((value) => {
   return Number.isFinite(numeric) ? numeric : value;
 }, z.number().min(0).optional().nullable());
 
+const optionalPositiveInteger = z.preprocess((value) => {
+  if (value == null) return null;
+  if (typeof value === 'number') return value;
+  if (typeof value !== 'string') return value;
+
+  const normalized = value.replace(/,/g, '').trim();
+  if (!normalized) return null;
+
+  const numeric = Number(normalized);
+  return Number.isFinite(numeric) ? numeric : value;
+}, z.number().int().min(1).optional().nullable());
+
 const optionalStringArray = z.array(z.string()).optional().nullable();
 
 export const upsertInstitutionSchema = z.object({
@@ -64,6 +76,7 @@ export const institutionJobSchema = z.object({
   application_email: optionalEmail,
   application_phone: optionalString,
   application_url: optionalString,
+  max_applications: optionalPositiveInteger,
   expires_at: optionalString,
   is_active: z.boolean().optional(),
 });
@@ -84,4 +97,8 @@ export const institutionJobApplicationUpdateSchema = z.object({
     const normalized = value.trim();
     return normalized || null;
   }, z.string().max(2000).optional().nullable()),
+});
+
+export const institutionJobApplicationArchiveSchema = z.object({
+  archived: z.boolean().optional(),
 });
