@@ -2,7 +2,15 @@ import { Router } from 'express';
 import db from '../config/database.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { requireRole } from '../middleware/roles.js';
-import { tutorPhotoUpload, institutionLogoUpload, courseCoverUpload, courseAssetUpload, tutorDocumentUpload, siteLogoUpload } from '../config/storage.js';
+import {
+  tutorPhotoUpload,
+  institutionLogoUpload,
+  courseCoverUpload,
+  courseAssetUpload,
+  tutorDocumentUpload,
+  siteLogoUpload,
+  jobApplicationDocumentUpload,
+} from '../config/storage.js';
 import { wrap } from '../middleware/error-handler.js';
 import { toPublicUploadDocuments, toPublicUploadUrl, toStoredUploadDocuments, toStoredUploadPath } from '../utils/uploads.js';
 import { assertPlatformWritable, getNumberAppSetting, upsertAppSettingValue } from '../utils/app-settings.js';
@@ -114,6 +122,19 @@ router.post('/tutor-document', authMiddleware, withDynamicUpload(tutorDocumentUp
 
   await db.query('UPDATE tutor_profiles SET verification_documents = ? WHERE user_id = ?', [JSON.stringify(docs), req.user.id]);
   res.json({ url: toPublicUploadUrl(path), documents: toPublicUploadDocuments(docs) });
+}));
+
+router.post('/job-application-document', authMiddleware, withDynamicUpload(jobApplicationDocumentUpload, 'document', 'max_file_upload_mb', 10), wrap(async (req, res) => {
+  const file = req.file;
+  if (!file) return res.status(400).json({ error: 'No file uploaded', code: 'VALIDATION_ERROR' });
+
+  const [profiles] = await db.query('SELECT role FROM profiles WHERE user_id = ? LIMIT 1', [req.user.id]);
+  if (profiles[0]?.role !== 'tutor') {
+    return res.status(403).json({ error: 'Tutor account required', code: 'FORBIDDEN' });
+  }
+
+  const path = toStoredUploadPath(`/uploads/job-application-documents/${file.filename}`);
+  res.json({ url: toPublicUploadUrl(path), name: file.originalname });
 }));
 
 export default router;

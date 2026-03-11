@@ -87,3 +87,21 @@ export function tutorDocumentUpload(fileSizeMb) {
     }
   });
 }
+
+export function jobApplicationDocumentUpload(fileSizeMb) {
+  return multer({
+    storage: makeStorage('job-application-documents'),
+    limits: { fileSize: parseInt(String(fileSizeMb ?? process.env.MAX_FILE_SIZE_MB ?? '10'), 10) * 1024 * 1024 },
+    fileFilter: (req, file, cb) => {
+      const allowed = [
+        'application/pdf',
+        'application/msword',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'image/jpeg',
+        'image/png',
+      ];
+      if (allowed.includes(file.mimetype)) cb(null, true);
+      else cb(new Error('Only PDF, DOC, DOCX, JPEG and PNG files are allowed'));
+    }
+  });
+}

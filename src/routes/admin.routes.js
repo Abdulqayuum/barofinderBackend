@@ -446,7 +446,16 @@ router.post('/users', wrap(async (req, res) => {
 router.patch('/users/:id', wrap(async (req, res) => {
   const { id } = req.params;
   const [rows] = await db.query(
-    `SELECT p.user_id, p.role, p.is_parent, tp.id AS tutor_profile_id, ip.id AS institution_profile_id
+    `SELECT
+      p.user_id,
+      p.full_name,
+      p.email,
+      p.phone,
+      p.city,
+      p.role,
+      p.is_parent,
+      tp.id AS tutor_profile_id,
+      ip.id AS institution_profile_id
      FROM profiles p
      LEFT JOIN tutor_profiles tp ON tp.user_id = p.user_id
      LEFT JOIN institution_profiles ip ON ip.user_id = p.user_id
@@ -464,6 +473,12 @@ router.patch('/users/:id', wrap(async (req, res) => {
   const profileValues = [];
   const userFields = [];
   const userValues = [];
+  let nextFullName = existing.full_name;
+  let nextEmail = existing.email;
+  let nextPhone = existing.phone || null;
+  let nextCity = existing.city || null;
+  let createTutorProfile = false;
+  let createInstitutionProfile = false;
 
   let requestedRole = existing.role;
   if (req.body.role !== undefined) {
@@ -471,17 +486,17 @@ router.patch('/users/:id', wrap(async (req, res) => {
     if (!PROFILE_ROLES.has(requestedRole)) {
       return res.status(400).json({ error: 'Invalid role', code: 'BAD_REQUEST' });
     }
-    if (requestedRole === 'tutor' && !existing.tutor_profile_id) {
-      return res.status(400).json({ error: 'Create tutor accounts from the Tutors page', code: 'BAD_REQUEST' });
-    }
-    if (requestedRole === 'institution' && !existing.institution_profile_id) {
-      return res.status(400).json({ error: 'Create institution accounts from the Institutions page', code: 'BAD_REQUEST' });
-    }
     if (existing.tutor_profile_id && requestedRole !== 'tutor') {
       return res.status(400).json({ error: 'Tutor accounts must be managed from the Tutors page', code: 'BAD_REQUEST' });
     }
     if (existing.institution_profile_id && requestedRole !== 'institution') {
       return res.status(400).json({ error: 'Institution accounts must be managed from the Institutions page', code: 'BAD_REQUEST' });
+    }
+    if (requestedRole === 'tutor' && !existing.tutor_profile_id) {
+      createTutorProfile = true;
+    }
+    if (requestedRole === 'institution' && !existing.institution_profile_id) {
+      createInstitutionProfile = true;
     }
     profileFields.push('role = ?');
     profileValues.push(existing.tutor_profile_id ? 'tutor' : existing.institution_profile_id ? 'institution' : requestedRole);
@@ -492,6 +507,7 @@ router.patch('/users/:id', wrap(async (req, res) => {
     if (!fullName) {
       return res.status(400).json({ error: 'Full name is required', code: 'BAD_REQUEST' });
     }
+    nextFullName = fullName;
     profileFields.push('full_name = ?');
     profileValues.push(fullName);
   }
@@ -511,6 +527,7 @@ router.patch('/users/:id', wrap(async (req, res) => {
     userValues.push(email);
     profileFields.push('email = ?');
     profileValues.push(email);
+    nextEmail = email;
   }
 
   if (req.body.password !== undefined) {
@@ -530,13 +547,15 @@ router.patch('/users/:id', wrap(async (req, res) => {
   }
 
   if (req.body.phone !== undefined) {
+    nextPhone = normalizeOptionalString(req.body.phone);
     profileFields.push('phone = ?');
-    profileValues.push(normalizeOptionalString(req.body.phone));
+    profileValues.push(nextPhone);
   }
 
   if (req.body.city !== undefined) {
+    nextCity = normalizeOptionalString(req.body.city);
     profileFields.push('city = ?');
-    profileValues.push(normalizeOptionalString(req.body.city));
+    profileValues.push(nextCity);
   }
 
   if (req.body.status !== undefined) {
@@ -571,6 +590,10 @@ router.patch('/users/:id', wrap(async (req, res) => {
     return res.json(await loadAdminUserById(id));
   }
 
+  const defaultCurrency = createTutorProfile
+    ? normalizeTrimmedString(String(await getAppSettingValue('currency_default', 'USD'))).toUpperCase() || 'USD'
+    : null;
+
   const conn = await db.getConnection();
   try {
     await conn.beginTransaction();
@@ -581,6 +604,96 @@ router.patch('/users/:id', wrap(async (req, res) => {
 
     if (profileFields.length > 0) {
       await conn.query(`UPDATE profiles SET ${profileFields.join(', ')} WHERE user_id = ?`, [...profileValues, id]);
+    }
+
+    if (createTutorProfile) {
+      await conn.query(
+        `INSERT INTO tutor_profiles (
+          id,
+          user_id,
+          bio,
+          education,
+          experience_years,
+          subjects,
+          levels,
+          languages,
+          online_available,
+          offline_available,
+          service_areas,
+          open_to_work,
+          verification_status,
+          verified_badge,
+          profile_photo_url,
+          online_hourly,
+          offline_hourly,
+          currency,
+          teaching_style,
+          gender,
+          packages,
+          availability,
+          verification_documents
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          uuid(),
+          id,
+          null,
+          null,
+          0,
+          JSON.stringify([]),
+          JSON.stringify([]),
+          JSON.stringify([]),
+          true,
+          false,
+          JSON.stringify([]),
+          false,
+          'pending',
+          false,
+          null,
+          0,
+          null,
+          defaultCurrency,
+          null,
+          null,
+          JSON.stringify([]),
+          JSON.stringify([]),
+          JSON.stringify([]),
+        ]
+      );
+    }
+
+    if (createInstitutionProfile) {
+      await conn.query(
+        `INSERT INTO institution_profiles (
+          id,
+          user_id,
+          institution_name,
+          institution_type,
+          description,
+          website_url,
+          address,
+          city,
+          contact_person_name,
+          contact_person_title,
+          contact_email,
+          contact_phone,
+          approval_status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          uuid(),
+          id,
+          nextFullName || 'Institution',
+          'other',
+          null,
+          null,
+          null,
+          nextCity,
+          nextFullName || null,
+          null,
+          nextEmail,
+          nextPhone,
+          'pending',
+        ]
+      );
     }
 
     await conn.commit();
