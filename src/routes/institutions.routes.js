@@ -18,6 +18,7 @@ import {
   assertPlatformWritable,
   getAppSettingValue,
 } from '../utils/app-settings.js';
+import { createImportantUserNotification } from '../utils/notification-delivery.js';
 
 const router = Router();
 const INSTITUTION_APPROVAL_STATUSES = new Set(['pending', 'approved', 'rejected', 'suspended']);
@@ -754,37 +755,31 @@ router.post('/jobs/:id/apply', authMiddleware, validateBody(institutionJobApplic
   );
   const tutorName = nameRows[0]?.full_name || 'A tutor';
 
-  await db.query(
-    `INSERT INTO notifications (user_id, type, title, message, metadata)
-     VALUES (?, ?, ?, ?, ?)`,
-    [
-      job.institution_user_id,
-      'job_application_submitted',
-      'New job application',
-      `${tutorName} applied for ${job.title}.`,
-      JSON.stringify({
-        application_id: applicationId,
-        job_id: id,
-        path: '/institution-job-applications',
-      }),
-    ]
-  );
+  await createImportantUserNotification({
+    serviceKey: 'job_applications',
+    userId: job.institution_user_id,
+    type: 'job_application_submitted',
+    title: 'New job application',
+    message: `${tutorName} applied for ${job.title}.`,
+    metadata: {
+      application_id: applicationId,
+      job_id: id,
+      path: '/institution-job-applications',
+    },
+  });
 
-  await db.query(
-    `INSERT INTO notifications (user_id, type, title, message, metadata)
-     VALUES (?, ?, ?, ?, ?)`,
-    [
-      req.user.id,
-      'job_application_submitted',
-      'Application submitted',
-      `Your application for ${job.title} was sent to ${job.institution_name || 'the institution'}.`,
-      JSON.stringify({
-        application_id: applicationId,
-        job_id: id,
-        path: '/tutor-jobs',
-      }),
-    ]
-  );
+  await createImportantUserNotification({
+    serviceKey: 'job_applications',
+    userId: req.user.id,
+    type: 'job_application_submitted',
+    title: 'Application submitted',
+    message: `Your application for ${job.title} was sent to ${job.institution_name || 'the institution'}.`,
+    metadata: {
+      application_id: applicationId,
+      job_id: id,
+      path: '/tutor-jobs',
+    },
+  });
 
   res.status(201).json({ id: applicationId, status: 'pending' });
 }));
@@ -822,21 +817,18 @@ router.patch('/job-applications/:id', authMiddleware, institutionOnly, validateB
   };
 
   const noteSuffix = nextNotes ? ` Note: ${nextNotes}` : '';
-  await db.query(
-    `INSERT INTO notifications (user_id, type, title, message, metadata)
-     VALUES (?, ?, ?, ?, ?)`,
-    [
-      existing.tutor_user_id,
-      'job_application_update',
-      'Application updated',
-      `${statusMessages[nextStatus] || statusMessages.pending}${noteSuffix}`,
-      JSON.stringify({
-        application_id: existing.id,
-        job_id: existing.job_id,
-        path: '/tutor-jobs',
-      }),
-    ]
-  );
+  await createImportantUserNotification({
+    serviceKey: 'job_applications',
+    userId: existing.tutor_user_id,
+    type: 'job_application_update',
+    title: 'Application updated',
+    message: `${statusMessages[nextStatus] || statusMessages.pending}${noteSuffix}`,
+    metadata: {
+      application_id: existing.id,
+      job_id: existing.job_id,
+      path: '/tutor-jobs',
+    },
+  });
 
   res.json(await loadInstitutionJobApplicationByIdForInstitution(id, req.user.id));
 }));

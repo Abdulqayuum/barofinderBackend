@@ -6,6 +6,7 @@ import { validateBody } from '../middleware/validation.js';
 import { wrap } from '../middleware/error-handler.js';
 import { tutorReportCreateSchema } from '../schemas/report.schema.js';
 import { assertAppSettingEnabled, assertPlatformWritable } from '../utils/app-settings.js';
+import { createImportantAdminNotification, createImportantUserNotification } from '../utils/notification-delivery.js';
 
 const router = Router();
 
@@ -236,36 +237,30 @@ router.post('/', authMiddleware, validateBody(tutorReportCreateSchema), wrap(asy
     ],
   );
 
-  await db.query(
-    `INSERT INTO notifications (user_id, type, title, message, metadata)
-     VALUES (?, ?, ?, ?, ?)`,
-    [
-      null,
-      'new_report',
-      'New Report Submitted',
-      `${reporterProfile.full_name || 'A user'} reported ${targetProfile.full_name || 'another account'}.`,
-      JSON.stringify({
-        report_id: reportId,
-        reporter_user_id: req.user.id,
-        target_user_id: targetUserId,
-      }),
-    ],
-  );
+  await createImportantAdminNotification({
+    serviceKey: 'reports',
+    type: 'new_report',
+    title: 'New Report Submitted',
+    message: `${reporterProfile.full_name || 'A user'} reported ${targetProfile.full_name || 'another account'}.`,
+    metadata: {
+      report_id: reportId,
+      reporter_user_id: req.user.id,
+      target_user_id: targetUserId,
+      path: '/admin/reports',
+    },
+  });
 
-  await db.query(
-    `INSERT INTO notifications (user_id, type, title, message, metadata)
-     VALUES (?, ?, ?, ?, ?)`,
-    [
-      req.user.id,
-      'report_update',
-      'Report Submitted',
-      `Your report about ${targetProfile.full_name || 'this account'} was sent to admin review.`,
-      JSON.stringify({
-        report_id: reportId,
-        target_user_id: targetUserId,
-      }),
-    ],
-  );
+  await createImportantUserNotification({
+    serviceKey: 'reports',
+    userId: req.user.id,
+    type: 'report_update',
+    title: 'Report Submitted',
+    message: `Your report about ${targetProfile.full_name || 'this account'} was sent to admin review.`,
+    metadata: {
+      report_id: reportId,
+      target_user_id: targetUserId,
+    },
+  });
 
   const [rows] = await db.query('SELECT * FROM tutor_reports WHERE id = ? LIMIT 1', [reportId]);
   res.status(201).json(rows[0]);

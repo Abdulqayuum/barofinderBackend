@@ -2,6 +2,14 @@ import { v4 as uuid } from 'uuid';
 import db from '../config/database.js';
 import { toPublicUploadUrl } from './uploads.js';
 
+const IMPORTANT_NOTIFICATION_EMAIL_SERVICE_DEFAULTS = [
+  'reports',
+  'verification',
+  'institution_approvals',
+  'job_applications',
+  'enrollments',
+];
+
 export const APP_SETTINGS_CATALOG = [
   { key: 'site_name', defaultValue: 'BaroFinder', isPublic: true },
   { key: 'site_logo_url', defaultValue: '', isPublic: true },
@@ -22,6 +30,8 @@ export const APP_SETTINGS_CATALOG = [
   { key: 'allow_course_enrollment', defaultValue: 'true', isPublic: true },
   { key: 'show_tutor_report_button', defaultValue: 'true', isPublic: true },
   { key: 'show_learner_report_tutor_button', defaultValue: 'true', isPublic: true },
+  { key: 'email_important_notifications', defaultValue: 'false', isPublic: false },
+  { key: 'email_notification_services', defaultValue: IMPORTANT_NOTIFICATION_EMAIL_SERVICE_DEFAULTS, isPublic: false },
   { key: 'courses_visibility', defaultValue: 'public', isPublic: true },
   { key: 'tutor_jobs_visibility', defaultValue: 'public_except_students', isPublic: true },
   { key: 'max_file_upload_mb', defaultValue: '5', isPublic: true },
@@ -65,6 +75,7 @@ function toPublicAppSettingRow(row) {
 
 export function serializeAppSettingValue(value) {
   if (typeof value === 'boolean') return value ? 'true' : 'false';
+  if (Array.isArray(value)) return value.map((item) => String(item).trim()).filter(Boolean).join(',');
   if (value == null) return '';
   return String(value);
 }
@@ -80,6 +91,28 @@ export function parseBooleanAppSettingValue(value, fallback = false) {
 export function parseNumberAppSettingValue(value, fallback = 0) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+export function parseStringArrayAppSettingValue(value, fallback = []) {
+  if (Array.isArray(value)) {
+    return [...new Set(value.map((item) => String(item).trim()).filter(Boolean))];
+  }
+
+  if (typeof value !== 'string') return [...fallback];
+
+  const trimmed = value.trim();
+  if (!trimmed) return [...fallback];
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (Array.isArray(parsed)) {
+      return parseStringArrayAppSettingValue(parsed, fallback);
+    }
+  } catch {
+    // fall back to comma-separated parsing
+  }
+
+  return [...new Set(trimmed.split(',').map((item) => item.trim()).filter(Boolean))];
 }
 
 export function normalizeContentVisibilityValue(value, fallback = 'public') {
@@ -220,6 +253,14 @@ export async function getNumberAppSetting(key, fallback = 0) {
     : fallback;
 
   return parseNumberAppSettingValue(await getAppSettingValue(key, defaultValue), defaultValue);
+}
+
+export async function getStringArrayAppSetting(key, fallback = []) {
+  const defaultValue = APP_SETTINGS_BY_KEY.has(key)
+    ? parseStringArrayAppSettingValue(APP_SETTINGS_BY_KEY.get(key).defaultValue, fallback)
+    : fallback;
+
+  return parseStringArrayAppSettingValue(await getAppSettingValue(key, defaultValue), defaultValue);
 }
 
 export async function upsertAppSettingValue(key, value) {

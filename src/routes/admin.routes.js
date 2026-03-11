@@ -9,6 +9,11 @@ import { v4 as uuid } from 'uuid';
 import { toPublicUploadDocuments, toPublicUploadUrl, toStoredUploadDocuments, toStoredUploadPath } from '../utils/uploads.js';
 import { getAppSettingValue, listAppSettings, serializeAppSettingValue } from '../utils/app-settings.js';
 import { adminTutorReportUpdateSchema } from '../schemas/report.schema.js';
+import {
+  createNotification,
+  createImportantUserNotification,
+  sendImportantNotificationEmailToUser,
+} from '../utils/notification-delivery.js';
 
 const router = Router();
 const BCRYPT_SALT_ROUNDS = parseInt(process.env.BCRYPT_SALT_ROUNDS || '10', 10);
@@ -937,20 +942,28 @@ router.patch('/tutors/:id/verify', wrap(async (req, res) => {
       'UPDATE tutor_profiles SET verification_status = ?, verified_badge = FALSE, verification_documents = NULL WHERE id = ?',
       [verificationStatus, id]
     );
-    await db.query(
-      `INSERT INTO notifications (user_id, type, title, message) VALUES (?, 'verification', 'Verification Rejected', 'Your uploaded documents were rejected. Please upload valid verification documents.')`,
-      [userId]
-    );
+    await createImportantUserNotification({
+      serviceKey: 'verification',
+      userId,
+      type: 'verification',
+      title: 'Verification Rejected',
+      message: 'Your uploaded documents were rejected. Please upload valid verification documents.',
+      metadata: { path: '/profile' },
+    });
   } else if (verificationStatus === 'suspended') {
     grantBadge = false;
     await db.query(
       'UPDATE tutor_profiles SET verification_status = ?, verified_badge = FALSE WHERE id = ?',
       [verificationStatus, id]
     );
-    await db.query(
-      `INSERT INTO notifications (user_id, type, title, message) VALUES (?, 'verification', 'Account Suspended', 'Your tutor profile has been suspended by an administrator.')`,
-      [userId]
-    );
+    await createImportantUserNotification({
+      serviceKey: 'verification',
+      userId,
+      type: 'verification',
+      title: 'Account Suspended',
+      message: 'Your tutor profile has been suspended by an administrator.',
+      metadata: { path: '/profile' },
+    });
   } else {
     // verified or pending
     await db.query(
@@ -959,10 +972,14 @@ router.patch('/tutors/:id/verify', wrap(async (req, res) => {
     );
     if (verificationStatus === 'verified') {
       const msg = grantBadge ? 'Your tutor profile has been verified and you received the Verified Badge!' : 'Your tutor profile has been verified. Upload documents to get the Verified Badge!';
-      await db.query(
-        `INSERT INTO notifications (user_id, type, title, message) VALUES (?, 'verification', 'Profile Verified', ?)`,
-        [userId, msg]
-      );
+      await createImportantUserNotification({
+        serviceKey: 'verification',
+        userId,
+        type: 'verification',
+        title: 'Profile Verified',
+        message: msg,
+        metadata: { path: '/profile' },
+      });
     }
   }
 
@@ -1305,6 +1322,13 @@ router.post('/institutions', wrap(async (req, res) => {
   const institutionId = uuid();
   const passwordHash = await bcrypt.hash(password, BCRYPT_SALT_ROUNDS);
   const notification = getInstitutionApprovalNotification(approvalStatus);
+  const institutionNotificationPayload = {
+    serviceKey: 'institution_approvals',
+    userId,
+    title: notification.title,
+    message: notification.message,
+    metadata: { path: '/institution-profile' },
+  };
 
   const conn = await db.getConnection();
   try {
@@ -1356,10 +1380,14 @@ router.post('/institutions', wrap(async (req, res) => {
       ]
     );
 
-    await conn.query(
-      'INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)',
-      [userId, 'system', notification.title, notification.message]
-    );
+    await createNotification({
+      executor: conn,
+      userId,
+      type: 'system',
+      title: notification.title,
+      message: notification.message,
+      metadata: institutionNotificationPayload.metadata,
+    });
 
     await conn.commit();
   } catch (error) {
@@ -1368,6 +1396,8 @@ router.post('/institutions', wrap(async (req, res) => {
   } finally {
     conn.release();
   }
+
+  await sendImportantNotificationEmailToUser(institutionNotificationPayload);
 
   res.status(201).json(await loadAdminInstitutionById(institutionId));
 }));
@@ -1395,6 +1425,7 @@ router.patch('/institutions/:id', wrap(async (req, res) => {
   const userFields = [];
   const userValues = [];
   let nextApprovalStatus = existing.approval_status;
+  let institutionNotificationPayload = null;
 
   if (req.body.institution_name !== undefined || req.body.full_name !== undefined) {
     const institutionName = normalizeTrimmedString(req.body.institution_name || req.body.full_name);
@@ -1540,10 +1571,21 @@ router.patch('/institutions/:id', wrap(async (req, res) => {
 
     if (nextApprovalStatus !== existing.approval_status) {
       const notification = getInstitutionApprovalNotification(nextApprovalStatus);
-      await conn.query(
-        'INSERT INTO notifications (user_id, type, title, message) VALUES (?, ?, ?, ?)',
-        [existing.user_id, 'system', notification.title, notification.message]
-      );
+      institutionNotificationPayload = {
+        serviceKey: 'institution_approvals',
+        userId: existing.user_id,
+        title: notification.title,
+        message: notification.message,
+        metadata: { path: '/institution-profile' },
+      };
+      await createNotification({
+        executor: conn,
+        userId: existing.user_id,
+        type: 'system',
+        title: notification.title,
+        message: notification.message,
+        metadata: institutionNotificationPayload.metadata,
+      });
     }
 
     await conn.commit();
@@ -1552,6 +1594,10 @@ router.patch('/institutions/:id', wrap(async (req, res) => {
     throw error;
   } finally {
     conn.release();
+  }
+
+  if (institutionNotificationPayload) {
+    await sendImportantNotificationEmailToUser(institutionNotificationPayload);
   }
 
   res.json(await loadAdminInstitutionById(id));
@@ -1736,6 +1782,7 @@ router.patch('/reports/:id', validateBody(adminTutorReportUpdateSchema), wrap(as
   }
 
   const conn = await db.getConnection();
+  const pendingNotificationEmails = [];
   try {
     await conn.beginTransaction();
 
@@ -1747,17 +1794,16 @@ router.patch('/reports/:id', validateBody(adminTutorReportUpdateSchema), wrap(as
     );
 
     if (actionChanged && nextAction === 'warning_sent') {
-      await conn.query(
-        `INSERT INTO notifications (user_id, type, title, message, metadata)
-         VALUES (?, ?, ?, ?, ?)`,
-        [
-          existing.target_user_id,
-          'report_update',
-          'Account Warning',
-          'An administrator issued a warning on your account after reviewing a report.',
-          JSON.stringify({ report_id: id }),
-        ],
-      );
+      const warningNotification = {
+        serviceKey: 'reports',
+        userId: existing.target_user_id,
+        type: 'report_update',
+        title: 'Account Warning',
+        message: 'An administrator issued a warning on your account after reviewing a report.',
+        metadata: { report_id: id, path: '/profile' },
+      };
+      await createNotification({ executor: conn, ...warningNotification });
+      pendingNotificationEmails.push(warningNotification);
     }
 
     if (actionChanged && nextAction === 'account_suspended') {
@@ -1765,17 +1811,16 @@ router.patch('/reports/:id', validateBody(adminTutorReportUpdateSchema), wrap(as
         "UPDATE profiles SET status = 'suspended' WHERE user_id = ?",
         [existing.target_user_id],
       );
-      await conn.query(
-        `INSERT INTO notifications (user_id, type, title, message, metadata)
-         VALUES (?, ?, ?, ?, ?)`,
-        [
-          existing.target_user_id,
-          'report_update',
-          'Account Suspended',
-          'Your account was suspended after an administrator reviewed a report.',
-          JSON.stringify({ report_id: id }),
-        ],
-      );
+      const suspendedNotification = {
+        serviceKey: 'reports',
+        userId: existing.target_user_id,
+        type: 'report_update',
+        title: 'Account Suspended',
+        message: 'Your account was suspended after an administrator reviewed a report.',
+        metadata: { report_id: id, path: '/profile' },
+      };
+      await createNotification({ executor: conn, ...suspendedNotification });
+      pendingNotificationEmails.push(suspendedNotification);
     }
 
     const reporterUpdateParts = [`Status: ${nextStatus}.`];
@@ -1787,17 +1832,16 @@ router.patch('/reports/:id', validateBody(adminTutorReportUpdateSchema), wrap(as
       reporterUpdateParts.push('No direct action was taken.');
     }
 
-    await conn.query(
-      `INSERT INTO notifications (user_id, type, title, message, metadata)
-       VALUES (?, ?, ?, ?, ?)`,
-      [
-        existing.reporter_user_id,
-        'report_update',
-        'Report Updated',
-        `Admin reviewed your report about ${existing.target_name || 'the reported account'}. ${reporterUpdateParts.join(' ')}`,
-        JSON.stringify({ report_id: id }),
-      ],
-    );
+    const reporterNotification = {
+      serviceKey: 'reports',
+      userId: existing.reporter_user_id,
+      type: 'report_update',
+      title: 'Report Updated',
+      message: `Admin reviewed your report about ${existing.target_name || 'the reported account'}. ${reporterUpdateParts.join(' ')}`,
+      metadata: { report_id: id },
+    };
+    await createNotification({ executor: conn, ...reporterNotification });
+    pendingNotificationEmails.push(reporterNotification);
 
     await conn.commit();
   } catch (error) {
@@ -1806,6 +1850,12 @@ router.patch('/reports/:id', validateBody(adminTutorReportUpdateSchema), wrap(as
   } finally {
     conn.release();
   }
+
+  await Promise.all(
+    pendingNotificationEmails.map((notification) =>
+      sendImportantNotificationEmailToUser(notification),
+    ),
+  );
 
   res.json(await loadAdminTutorReportById(id));
 }));

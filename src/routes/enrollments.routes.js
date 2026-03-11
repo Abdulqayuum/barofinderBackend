@@ -7,6 +7,7 @@ import { enrollmentCreateSchema, enrollmentUpdateSchema } from '../schemas/enrol
 import { wrap } from '../middleware/error-handler.js';
 import { toPublicUploadUrl } from '../utils/uploads.js';
 import { assertAppSettingEnabled, assertPlatformWritable } from '../utils/app-settings.js';
+import { createImportantUserNotification } from '../utils/notification-delivery.js';
 
 const router = Router();
 
@@ -89,19 +90,20 @@ router.patch('/enrollments/:id', authMiddleware, validateBody(enrollmentUpdateSc
   );
 
   if (status === 'approved' || status === 'rejected') {
-    await db.query(
-      `INSERT INTO notifications (user_id, type, title, message, metadata)
-       VALUES (?, ?, ?, ?, ?)`,
-      [
-        enrollment.student_id,
-        status === 'approved' ? 'enrollment_approved' : 'enrollment_rejected',
-        status === 'approved' ? 'Enrollment Approved' : 'Enrollment Rejected',
-        status === 'approved'
-          ? 'Your enrollment was approved.'
-          : 'Your enrollment was rejected.',
-        JSON.stringify({ enrollment_id: id, course_id: enrollment.course_id })
-      ]
-    );
+    await createImportantUserNotification({
+      serviceKey: 'enrollments',
+      userId: enrollment.student_id,
+      type: status === 'approved' ? 'enrollment_approved' : 'enrollment_rejected',
+      title: status === 'approved' ? 'Enrollment Approved' : 'Enrollment Rejected',
+      message: status === 'approved'
+        ? 'Your enrollment was approved.'
+        : 'Your enrollment was rejected.',
+      metadata: {
+        enrollment_id: id,
+        course_id: enrollment.course_id,
+        path: '/my-learning',
+      },
+    });
   }
 
   const [rows] = await db.query('SELECT * FROM course_enrollments WHERE id = ?', [id]);
