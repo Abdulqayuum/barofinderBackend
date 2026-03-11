@@ -18,6 +18,7 @@ export const upsertTutorSchema = z.object({
   service_areas: z.array(z.string()).optional().nullable(),
   online_available: z.boolean().optional(),
   offline_available: z.boolean().optional(),
+  pricing_type: z.enum(['hour', 'week', 'month', 'contract']).optional(),
   online_hourly: z.number().min(0).optional(),
   offline_hourly: z.number().min(0).optional().nullable(),
   currency: z.string().optional().nullable(),

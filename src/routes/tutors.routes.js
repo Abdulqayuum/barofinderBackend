@@ -9,6 +9,14 @@ import { toPublicUploadDocuments, toPublicUploadUrl, toStoredUploadDocuments, to
 import { assertAppSettingEnabled, assertPlatformWritable, getAppSettingValue } from '../utils/app-settings.js';
 
 const router = Router();
+const TUTOR_PRICING_TYPES = new Set(['hour', 'week', 'month', 'contract']);
+const DEFAULT_TUTOR_PRICING_TYPE = 'hour';
+
+function readTutorPricingType(value) {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toLowerCase();
+  return TUTOR_PRICING_TYPES.has(normalized) ? normalized : null;
+}
 
 function toTutorResponse(tutor) {
   if (!tutor) return tutor;
@@ -51,6 +59,11 @@ function buildTutorFilters(query) {
   }
   if (query.openToWork === 'true') {
     filters.push('tp.open_to_work = TRUE');
+  }
+  const pricingType = readTutorPricingType(query.pricingType || query.pricing_type);
+  if (pricingType) {
+    filters.push('COALESCE(tp.pricing_type, ?) = ?');
+    params.push(DEFAULT_TUTOR_PRICING_TYPE, pricingType);
   }
   if (query.minPrice) {
     filters.push('tp.online_hourly >= ?');
@@ -120,6 +133,7 @@ router.get('/', wrap(async (req, res) => {
       COALESCE(p.city, JSON_UNQUOTE(JSON_EXTRACT(tp.service_areas, '$[0]')), 'Online') AS city,
       tp.online_available AS online,
       tp.offline_available AS offline,
+      COALESCE(tp.pricing_type, '${DEFAULT_TUTOR_PRICING_TYPE}') AS pricing_type,
       tp.online_hourly AS price_per_hour,
       tp.offline_hourly AS offline_price,
       tp.currency,
@@ -166,6 +180,7 @@ router.get('/', wrap(async (req, res) => {
     city: r.city,
     online: !!r.online,
     offline: !!r.offline,
+    pricingType: r.pricing_type || DEFAULT_TUTOR_PRICING_TYPE,
     pricePerHour: Number(r.price_per_hour || 0),
     offlinePrice: r.offline_price != null ? Number(r.offline_price) : null,
     currency: r.currency || 'USD',
@@ -212,6 +227,7 @@ router.get('/:id', wrap(async (req, res) => {
       COALESCE(p.city, JSON_UNQUOTE(JSON_EXTRACT(tp.service_areas, '$[0]')), 'Online') AS city,
       tp.online_available AS online,
       tp.offline_available AS offline,
+      COALESCE(tp.pricing_type, '${DEFAULT_TUTOR_PRICING_TYPE}') AS pricing_type,
       tp.online_hourly AS price_per_hour,
       tp.offline_hourly AS offline_price,
       tp.currency,
@@ -249,6 +265,7 @@ router.get('/:id', wrap(async (req, res) => {
     city: r.city,
     online: !!r.online,
     offline: !!r.offline,
+    pricingType: r.pricing_type || DEFAULT_TUTOR_PRICING_TYPE,
     pricePerHour: Number(r.price_per_hour || 0),
     offlinePrice: r.offline_price != null ? Number(r.offline_price) : null,
     currency: r.currency || 'USD',
@@ -290,6 +307,7 @@ router.post('/', authMiddleware, validateBody(upsertTutorSchema), wrap(async (re
     service_areas: JSON.stringify(data.service_areas || []),
     online_available: data.online_available !== undefined ? data.online_available : true,
     offline_available: data.offline_available !== undefined ? data.offline_available : false,
+    pricing_type: readTutorPricingType(data.pricing_type) || DEFAULT_TUTOR_PRICING_TYPE,
     online_hourly: data.online_hourly || 0,
     offline_hourly: data.offline_hourly ?? null,
     currency: data.currency || defaultCurrency,
@@ -305,12 +323,12 @@ router.post('/', authMiddleware, validateBody(upsertTutorSchema), wrap(async (re
       `UPDATE tutor_profiles SET
         bio = ?, education = ?, teaching_style = ?, experience_years = ?, gender = ?, subjects = ?,
         levels = ?, languages = ?, service_areas = ?, online_available = ?, offline_available = ?,
-        online_hourly = ?, offline_hourly = ?, currency = ?, availability = ?, packages = ?, profile_photo_url = ?, open_to_work = ?, verification_documents = ?
+        pricing_type = ?, online_hourly = ?, offline_hourly = ?, currency = ?, availability = ?, packages = ?, profile_photo_url = ?, open_to_work = ?, verification_documents = ?
        WHERE user_id = ?`,
       [
         payload.bio, payload.education, payload.teaching_style, payload.experience_years, payload.gender, payload.subjects,
         payload.levels, payload.languages, payload.service_areas, payload.online_available, payload.offline_available,
-        payload.online_hourly, payload.offline_hourly, payload.currency, payload.availability, payload.packages, payload.profile_photo_url, payload.open_to_work, payload.verification_documents,
+        payload.pricing_type, payload.online_hourly, payload.offline_hourly, payload.currency, payload.availability, payload.packages, payload.profile_photo_url, payload.open_to_work, payload.verification_documents,
         req.user.id
       ]
     );
@@ -318,8 +336,8 @@ router.post('/', authMiddleware, validateBody(upsertTutorSchema), wrap(async (re
     await db.query(
       `INSERT INTO tutor_profiles
        (user_id, bio, education, teaching_style, experience_years, gender, subjects, levels, languages, service_areas,
-        online_available, offline_available, online_hourly, offline_hourly, currency, availability, packages, profile_photo_url, open_to_work, verification_documents, verification_status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+        online_available, offline_available, pricing_type, online_hourly, offline_hourly, currency, availability, packages, profile_photo_url, open_to_work, verification_documents, verification_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
       [
         req.user.id,
         payload.bio,
@@ -333,6 +351,7 @@ router.post('/', authMiddleware, validateBody(upsertTutorSchema), wrap(async (re
         payload.service_areas,
         payload.online_available,
         payload.offline_available,
+        payload.pricing_type,
         payload.online_hourly,
         payload.offline_hourly,
         payload.currency,
