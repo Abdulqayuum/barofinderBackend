@@ -36,6 +36,8 @@ export const APP_SETTINGS_CATALOG = [
   { key: 'allow_course_enrollment', defaultValue: 'true', isPublic: true },
   { key: 'show_tutor_report_button', defaultValue: 'true', isPublic: true },
   { key: 'show_learner_report_tutor_button', defaultValue: 'true', isPublic: true },
+  { key: 'show_home_download_button', defaultValue: 'true', isPublic: true },
+  { key: 'home_download_url', defaultValue: '', isPublic: true },
   { key: 'email_important_notifications', defaultValue: 'false', isPublic: false },
   { key: 'email_notification_services', defaultValue: IMPORTANT_NOTIFICATION_EMAIL_SERVICE_DEFAULTS, isPublic: false },
   { key: 'navbar_home_visibility', defaultValue: 'public', isPublic: true },
