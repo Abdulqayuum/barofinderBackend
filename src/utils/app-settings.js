@@ -251,17 +251,27 @@ export async function listAppSettings() {
 }
 
 export async function listPublicAppSettings() {
-  const rows = await listAppSettings();
-  return rows
-    .filter((row) => PUBLIC_APP_SETTING_KEYS.has(row.key))
-    .map((row) => {
-      const normalized = toPublicAppSettingRow(row);
-      return { key: normalized.key, value: normalized.value };
+  const [rows] = await db.query('SELECT * FROM app_settings ORDER BY `key` ASC');
+  const rowByKey = new Map(rows.map((row) => [row.key, toPublicAppSettingRow(row)]));
+
+  return APP_SETTINGS_CATALOG
+    .filter((setting) => setting.isPublic)
+    .map((setting) => {
+      const existing = rowByKey.get(setting.key);
+      if (existing) {
+        return { key: existing.key, value: existing.value };
+      }
+
+      const fallbackRow = toPublicAppSettingRow({
+        id: null,
+        key: setting.key,
+        value: serializeAppSettingValue(setting.defaultValue),
+      });
+      return { key: fallbackRow.key, value: fallbackRow.value };
     });
 }
 
 export async function getAppSettingValue(key, fallback = '') {
-  await ensureDefaultAppSettings();
   const [rows] = await db.query('SELECT value FROM app_settings WHERE `key` = ? LIMIT 1', [key]);
   const row = rows[0];
   if (row && row.value !== null && row.value !== undefined && row.value !== '') {
