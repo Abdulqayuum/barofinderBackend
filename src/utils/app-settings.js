@@ -21,6 +21,7 @@ export const APP_SETTINGS_CATALOG = [
   { key: 'allow_course_creation', defaultValue: 'true', isPublic: true },
   { key: 'allow_course_enrollment', defaultValue: 'true', isPublic: true },
   { key: 'show_tutor_report_button', defaultValue: 'true', isPublic: true },
+  { key: 'show_learner_report_tutor_button', defaultValue: 'true', isPublic: true },
   { key: 'courses_visibility', defaultValue: 'public', isPublic: true },
   { key: 'tutor_jobs_visibility', defaultValue: 'public_except_students', isPublic: true },
   { key: 'max_file_upload_mb', defaultValue: '5', isPublic: true },

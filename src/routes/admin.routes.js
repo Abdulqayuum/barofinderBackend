@@ -157,6 +157,7 @@ function toAdminTutorReportResponse(report) {
 
   return {
     ...report,
+    reporter_is_parent: !!report.reporter_is_parent,
     reported_user_is_parent: !!report.reported_user_is_parent,
   };
 }
@@ -167,6 +168,8 @@ async function loadAdminTutorReportById(reportId, executor = db) {
       tr.*,
       reporter.full_name AS reporter_name,
       reporter.email AS reporter_email,
+      reporter.role AS reporter_role,
+      reporter.is_parent AS reporter_is_parent,
       target.full_name AS target_name,
       target.email AS target_email,
       target.status AS target_status,
@@ -1568,6 +1571,8 @@ router.get('/reports', wrap(async (_req, res) => {
       tr.*,
       reporter.full_name AS reporter_name,
       reporter.email AS reporter_email,
+      reporter.role AS reporter_role,
+      reporter.is_parent AS reporter_is_parent,
       target.full_name AS target_name,
       target.email AS target_email,
       target.status AS target_status,
@@ -1636,7 +1641,7 @@ router.patch('/reports/:id', validateBody(adminTutorReportUpdateSchema), wrap(as
           existing.target_user_id,
           'report_update',
           'Account Warning',
-          'An administrator issued a warning on your account after reviewing a tutor report.',
+          'An administrator issued a warning on your account after reviewing a report.',
           JSON.stringify({ report_id: id }),
         ],
       );
@@ -1654,7 +1659,7 @@ router.patch('/reports/:id', validateBody(adminTutorReportUpdateSchema), wrap(as
           existing.target_user_id,
           'report_update',
           'Account Suspended',
-          'Your account was suspended after an administrator reviewed a tutor report.',
+          'Your account was suspended after an administrator reviewed a report.',
           JSON.stringify({ report_id: id }),
         ],
       );

@@ -15,14 +15,34 @@ function normalizeOptionalId(value) {
   return normalized || null;
 }
 
-function getReportedAccountType(profile) {
+function getAccountType(profile) {
   if (!profile) return 'student';
-  if (profile.role === 'parent' || profile.is_parent) return 'parent';
-  if (profile.role === 'student') return 'student';
-  return typeof profile.role === 'string' ? profile.role.toLowerCase() : 'student';
+  const role = typeof profile.role === 'string' ? profile.role.toLowerCase() : '';
+  if (role === 'tutor' || profile.tutor_profile_id) return 'tutor';
+  if (role === 'parent' || profile.is_parent) return 'parent';
+  if (role === 'institution') return 'institution';
+  if (role === 'admin') return 'admin';
+  return 'student';
 }
 
-async function loadCourseContext({ tutorUserId, targetUserId, enrollmentId = null, courseId = null }) {
+function isLearnerAccountType(accountType) {
+  return accountType === 'student' || accountType === 'parent';
+}
+
+async function loadProfileWithTutorContext(userId) {
+  const [rows] = await db.query(
+    `SELECT p.user_id, p.full_name, p.role, p.is_parent, tp.id AS tutor_profile_id
+     FROM profiles p
+     LEFT JOIN tutor_profiles tp ON tp.user_id = p.user_id
+     WHERE p.user_id = ?
+     LIMIT 1`,
+    [userId],
+  );
+
+  return rows[0] || null;
+}
+
+async function loadCourseContext({ learnerUserId, tutorUserId, enrollmentId = null, courseId = null }) {
   if (enrollmentId) {
     const [rows] = await db.query(
       `SELECT e.id, e.course_id, c.title AS course_title
@@ -34,7 +54,7 @@ async function loadCourseContext({ tutorUserId, targetUserId, enrollmentId = nul
          AND e.status = 'approved'
          ${courseId ? 'AND e.course_id = ?' : ''}
        LIMIT 1`,
-      courseId ? [enrollmentId, targetUserId, tutorUserId, courseId] : [enrollmentId, targetUserId, tutorUserId],
+      courseId ? [enrollmentId, learnerUserId, tutorUserId, courseId] : [enrollmentId, learnerUserId, tutorUserId],
     );
     return rows[0] || null;
   }
@@ -50,7 +70,7 @@ async function loadCourseContext({ tutorUserId, targetUserId, enrollmentId = nul
          AND e.status = 'approved'
        ORDER BY e.created_at DESC
        LIMIT 1`,
-      [courseId, targetUserId, tutorUserId],
+      [courseId, learnerUserId, tutorUserId],
     );
     return rows[0] || null;
   }
@@ -64,12 +84,12 @@ async function loadCourseContext({ tutorUserId, targetUserId, enrollmentId = nul
        AND e.status = 'approved'
      ORDER BY e.created_at DESC
      LIMIT 1`,
-    [targetUserId, tutorUserId],
+    [learnerUserId, tutorUserId],
   );
   return rows[0] || null;
 }
 
-async function loadConversationContext({ tutorUserId, targetUserId, conversationId = null }) {
+async function loadConversationContext({ learnerUserId, tutorUserId, conversationId = null }) {
   if (conversationId) {
     const [rows] = await db.query(
       `SELECT id
@@ -78,7 +98,7 @@ async function loadConversationContext({ tutorUserId, targetUserId, conversation
          AND tutor_id = ?
          AND student_id = ?
        LIMIT 1`,
-      [conversationId, tutorUserId, targetUserId],
+      [conversationId, tutorUserId, learnerUserId],
     );
     return rows[0] || null;
   }
@@ -90,18 +110,22 @@ async function loadConversationContext({ tutorUserId, targetUserId, conversation
        AND student_id = ?
      ORDER BY updated_at DESC
      LIMIT 1`,
-    [tutorUserId, targetUserId],
+    [tutorUserId, learnerUserId],
   );
   return rows[0] || null;
 }
 
 router.post('/', authMiddleware, validateBody(tutorReportCreateSchema), wrap(async (req, res) => {
   await assertPlatformWritable();
-  await assertAppSettingEnabled('show_tutor_report_button', 'Tutor reporting is currently disabled.');
 
-  const [tutorRows] = await db.query('SELECT id FROM tutor_profiles WHERE user_id = ? LIMIT 1', [req.user.id]);
-  if (!tutorRows[0]) {
-    return res.status(403).json({ error: 'Only tutors can submit reports.', code: 'FORBIDDEN' });
+  const reporterProfile = await loadProfileWithTutorContext(req.user.id);
+  if (!reporterProfile) {
+    return res.status(404).json({ error: 'Reporter account not found.', code: 'NOT_FOUND' });
+  }
+
+  const reporterAccountType = getAccountType(reporterProfile);
+  if (reporterAccountType !== 'tutor' && !isLearnerAccountType(reporterAccountType)) {
+    return res.status(403).json({ error: 'Only tutors, students, and parents can submit reports.', code: 'FORBIDDEN' });
   }
 
   const targetUserId = req.body.target_user_id;
@@ -109,35 +133,52 @@ router.post('/', authMiddleware, validateBody(tutorReportCreateSchema), wrap(asy
     return res.status(400).json({ error: 'You cannot report your own account.', code: 'VALIDATION_ERROR' });
   }
 
-  const [targetRows] = await db.query(
-    'SELECT user_id, full_name, role, is_parent FROM profiles WHERE user_id = ? LIMIT 1',
-    [targetUserId],
-  );
-  const targetProfile = targetRows[0];
+  const targetProfile = await loadProfileWithTutorContext(targetUserId);
   if (!targetProfile) {
     return res.status(404).json({ error: 'Reported account not found.', code: 'NOT_FOUND' });
   }
 
-  const reportedAccountType = getReportedAccountType(targetProfile);
-  if (reportedAccountType !== 'student' && reportedAccountType !== 'parent') {
-    return res.status(400).json({ error: 'Tutors can only report student or parent accounts.', code: 'VALIDATION_ERROR' });
-  }
+  const reportedAccountType = getAccountType(targetProfile);
 
   const courseId = normalizeOptionalId(req.body.course_id);
   const enrollmentId = normalizeOptionalId(req.body.enrollment_id);
   const conversationId = normalizeOptionalId(req.body.conversation_id);
 
+  let learnerUserId = null;
+  let tutorUserId = null;
+
+  if (reporterAccountType === 'tutor') {
+    await assertAppSettingEnabled('show_tutor_report_button', 'Tutor reporting is currently disabled.');
+    if (!isLearnerAccountType(reportedAccountType)) {
+      return res.status(400).json({ error: 'Tutors can only report student or parent accounts.', code: 'VALIDATION_ERROR' });
+    }
+    learnerUserId = targetUserId;
+    tutorUserId = req.user.id;
+  } else {
+    await assertAppSettingEnabled(
+      'show_learner_report_tutor_button',
+      'Student and parent reporting is currently disabled.',
+    );
+    if (reportedAccountType !== 'tutor') {
+      return res.status(400).json({ error: 'Students and parents can only report tutor accounts.', code: 'VALIDATION_ERROR' });
+    }
+    learnerUserId = req.user.id;
+    tutorUserId = targetUserId;
+  }
+
   let courseContext = null;
   if (courseId || enrollmentId) {
     courseContext = await loadCourseContext({
-      tutorUserId: req.user.id,
-      targetUserId,
+      learnerUserId,
+      tutorUserId,
       courseId,
       enrollmentId,
     });
     if (!courseContext) {
       return res.status(403).json({
-        error: 'You can only report learners attached to your approved course enrollments.',
+        error: reporterAccountType === 'tutor'
+          ? 'You can only report learners attached to your approved course enrollments.'
+          : 'You can only report tutors attached to your approved course enrollments.',
         code: 'FORBIDDEN',
       });
     }
@@ -146,35 +187,31 @@ router.post('/', authMiddleware, validateBody(tutorReportCreateSchema), wrap(asy
   let conversationContext = null;
   if (conversationId) {
     conversationContext = await loadConversationContext({
-      tutorUserId: req.user.id,
-      targetUserId,
+      learnerUserId,
+      tutorUserId,
       conversationId,
     });
     if (!conversationContext) {
       return res.status(403).json({
-        error: 'You can only report learners who have an existing conversation with you.',
+        error: reporterAccountType === 'tutor'
+          ? 'You can only report learners who have an existing conversation with you.'
+          : 'You can only report tutors who have an existing conversation with you.',
         code: 'FORBIDDEN',
       });
     }
   }
 
   if (!courseContext && !conversationContext) {
-    courseContext = await loadCourseContext({ tutorUserId: req.user.id, targetUserId });
-    conversationContext = await loadConversationContext({ tutorUserId: req.user.id, targetUserId });
+    courseContext = await loadCourseContext({ learnerUserId, tutorUserId });
+    conversationContext = await loadConversationContext({ learnerUserId, tutorUserId });
   }
 
-  if (!courseContext && !conversationContext) {
+  if (reporterAccountType === 'tutor' && !courseContext && !conversationContext) {
     return res.status(403).json({
       error: 'You can only report students or parents who are enrolled with you or messaging you.',
       code: 'FORBIDDEN',
     });
   }
-
-  const [reporterRows] = await db.query(
-    'SELECT full_name FROM profiles WHERE user_id = ? LIMIT 1',
-    [req.user.id],
-  );
-  const reporterProfile = reporterRows[0] || { full_name: 'Tutor' };
 
   const reportId = uuid();
   const sourceType = courseContext ? 'course_enrollment' : conversationContext ? 'conversation' : 'general';
@@ -205,8 +242,8 @@ router.post('/', authMiddleware, validateBody(tutorReportCreateSchema), wrap(asy
     [
       null,
       'new_report',
-      'New Tutor Report',
-      `${reporterProfile.full_name || 'A tutor'} reported ${targetProfile.full_name || 'a learner'}.`,
+      'New Report Submitted',
+      `${reporterProfile.full_name || 'A user'} reported ${targetProfile.full_name || 'another account'}.`,
       JSON.stringify({
         report_id: reportId,
         reporter_user_id: req.user.id,
