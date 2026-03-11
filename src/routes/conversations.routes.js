@@ -16,13 +16,20 @@ router.get('/', authMiddleware, wrap(async (req, res) => {
       (SELECT content FROM messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC LIMIT 1) AS last_message,
       (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id AND m.is_read = FALSE AND m.sender_id != ?) AS unread_count,
       CASE WHEN c.student_id = ? THEN p2.full_name ELSE p1.full_name END AS other_name,
-      CASE WHEN c.student_id = ? THEN p2.email ELSE p1.email END AS other_email
+      CASE WHEN c.student_id = ? THEN p2.email ELSE p1.email END AS other_email,
+      CASE WHEN c.student_id = ? THEN p2.user_id ELSE p1.user_id END AS other_user_id,
+      CASE WHEN c.student_id = ? THEN p2.role ELSE p1.role END AS other_user_role,
+      CASE WHEN c.student_id = ? THEN p2.is_parent ELSE p1.is_parent END AS other_user_is_parent,
+      CASE WHEN c.student_id = ? THEN tp2.verified_badge ELSE tp1.verified_badge END AS other_user_verified,
+      CASE WHEN c.student_id = ? THEN tp2.id ELSE tp1.id END AS other_user_tutor_profile_id
      FROM conversations c
      JOIN profiles p1 ON p1.user_id = c.student_id
      JOIN profiles p2 ON p2.user_id = c.tutor_id
+     LEFT JOIN tutor_profiles tp1 ON tp1.user_id = p1.user_id
+     LEFT JOIN tutor_profiles tp2 ON tp2.user_id = p2.user_id
      WHERE c.student_id = ? OR c.tutor_id = ?
      ORDER BY c.updated_at DESC`,
-    [userId, userId, userId, userId, userId]
+    [userId, userId, userId, userId, userId, userId, userId, userId, userId, userId]
   );
 
   const data = rows.map(r => ({
@@ -30,6 +37,11 @@ router.get('/', authMiddleware, wrap(async (req, res) => {
     student_id: r.student_id,
     tutor_id: r.tutor_id,
     other_user: { full_name: r.other_name, email: r.other_email },
+    other_user_id: r.other_user_id,
+    other_user_role: r.other_user_role,
+    other_user_is_parent: !!r.other_user_is_parent,
+    other_user_verified: !!r.other_user_verified,
+    other_user_tutor_profile_id: r.other_user_tutor_profile_id || null,
     last_message: r.last_message,
     unread_count: r.unread_count,
     updated_at: r.updated_at

@@ -3,10 +3,12 @@ import bcrypt from 'bcryptjs';
 import db from '../config/database.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { requireRole } from '../middleware/roles.js';
+import { validateBody } from '../middleware/validation.js';
 import { wrap } from '../middleware/error-handler.js';
 import { v4 as uuid } from 'uuid';
 import { toPublicUploadDocuments, toPublicUploadUrl, toStoredUploadDocuments, toStoredUploadPath } from '../utils/uploads.js';
 import { getAppSettingValue, listAppSettings, serializeAppSettingValue } from '../utils/app-settings.js';
+import { adminTutorReportUpdateSchema } from '../schemas/report.schema.js';
 
 const router = Router();
 const BCRYPT_SALT_ROUNDS = parseInt(process.env.BCRYPT_SALT_ROUNDS || '10', 10);
@@ -15,6 +17,8 @@ const PROFILE_STATUSES = new Set(['active', 'suspended']);
 const TUTOR_VERIFICATION_STATUSES = new Set(['pending', 'verified', 'rejected', 'suspended']);
 const INSTITUTION_APPROVAL_STATUSES = new Set(['pending', 'approved', 'rejected', 'suspended']);
 const INSTITUTION_TYPES = new Set(['school', 'university', 'college', 'academy', 'training_center', 'other']);
+const REPORT_STATUSES = new Set(['pending', 'reviewing', 'resolved', 'dismissed']);
+const REPORT_ACTIONS = new Set(['none', 'warning_sent', 'account_suspended', 'no_action']);
 
 router.use(authMiddleware);
 router.use(requireRole('admin'));
@@ -146,6 +150,39 @@ function toAdminAdResponse(ad) {
     ...ad,
     image_url: toPublicUploadUrl(ad.image_url),
   };
+}
+
+function toAdminTutorReportResponse(report) {
+  if (!report) return null;
+
+  return {
+    ...report,
+    reported_user_is_parent: !!report.reported_user_is_parent,
+  };
+}
+
+async function loadAdminTutorReportById(reportId, executor = db) {
+  const [rows] = await executor.query(
+    `SELECT
+      tr.*,
+      reporter.full_name AS reporter_name,
+      reporter.email AS reporter_email,
+      target.full_name AS target_name,
+      target.email AS target_email,
+      target.status AS target_status,
+      c.title AS course_title,
+      reviewer.full_name AS reviewed_by_name
+     FROM tutor_reports tr
+     JOIN profiles reporter ON reporter.user_id = tr.reporter_user_id
+     JOIN profiles target ON target.user_id = tr.target_user_id
+     LEFT JOIN courses c ON c.id = tr.course_id
+     LEFT JOIN profiles reviewer ON reviewer.user_id = tr.reviewed_by
+     WHERE tr.id = ?
+     LIMIT 1`,
+    [reportId],
+  );
+
+  return toAdminTutorReportResponse(rows[0] || null);
 }
 
 async function loadAdminUserById(userId, executor = db) {
@@ -1523,6 +1560,136 @@ router.delete('/reviews/:id', wrap(async (req, res) => {
   await db.query('DELETE FROM reviews WHERE id = ?', [id]);
   await db.query('DELETE FROM course_reviews WHERE id = ?', [id]);
   res.json({ message: 'Review deleted' });
+}));
+
+router.get('/reports', wrap(async (_req, res) => {
+  const [rows] = await db.query(
+    `SELECT
+      tr.*,
+      reporter.full_name AS reporter_name,
+      reporter.email AS reporter_email,
+      target.full_name AS target_name,
+      target.email AS target_email,
+      target.status AS target_status,
+      c.title AS course_title,
+      reviewer.full_name AS reviewed_by_name
+     FROM tutor_reports tr
+     JOIN profiles reporter ON reporter.user_id = tr.reporter_user_id
+     JOIN profiles target ON target.user_id = tr.target_user_id
+     LEFT JOIN courses c ON c.id = tr.course_id
+     LEFT JOIN profiles reviewer ON reviewer.user_id = tr.reviewed_by
+     ORDER BY FIELD(tr.status, 'pending', 'reviewing', 'resolved', 'dismissed'), tr.created_at DESC`,
+  );
+
+  res.json(rows.map((row) => toAdminTutorReportResponse(row)));
+}));
+
+router.patch('/reports/:id', validateBody(adminTutorReportUpdateSchema), wrap(async (req, res) => {
+  const { id } = req.params;
+  const existing = await loadAdminTutorReportById(id);
+  if (!existing) {
+    return res.status(404).json({ error: 'Report not found', code: 'NOT_FOUND' });
+  }
+
+  let nextStatus = req.body.status ?? existing.status;
+  let nextAction = req.body.action_taken ?? existing.action_taken;
+  const nextAdminNotes = Object.prototype.hasOwnProperty.call(req.body, 'admin_notes')
+    ? normalizeOptionalString(req.body.admin_notes)
+    : normalizeOptionalString(existing.admin_notes);
+
+  if (!REPORT_STATUSES.has(nextStatus)) {
+    return res.status(400).json({ error: 'Invalid report status', code: 'BAD_REQUEST' });
+  }
+
+  if (!REPORT_ACTIONS.has(nextAction)) {
+    return res.status(400).json({ error: 'Invalid report action', code: 'BAD_REQUEST' });
+  }
+
+  if (nextStatus === 'pending' && nextAction !== 'none') {
+    nextStatus = 'resolved';
+  }
+
+  const notesChanged = nextAdminNotes !== normalizeOptionalString(existing.admin_notes);
+  const statusChanged = nextStatus !== existing.status;
+  const actionChanged = nextAction !== existing.action_taken;
+
+  if (!notesChanged && !statusChanged && !actionChanged) {
+    return res.json(existing);
+  }
+
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    await conn.query(
+      `UPDATE tutor_reports
+       SET status = ?, action_taken = ?, admin_notes = ?, reviewed_by = ?, reviewed_at = NOW()
+       WHERE id = ?`,
+      [nextStatus, nextAction, nextAdminNotes, req.user.id, id],
+    );
+
+    if (actionChanged && nextAction === 'warning_sent') {
+      await conn.query(
+        `INSERT INTO notifications (user_id, type, title, message, metadata)
+         VALUES (?, ?, ?, ?, ?)`,
+        [
+          existing.target_user_id,
+          'report_update',
+          'Account Warning',
+          'An administrator issued a warning on your account after reviewing a tutor report.',
+          JSON.stringify({ report_id: id }),
+        ],
+      );
+    }
+
+    if (actionChanged && nextAction === 'account_suspended') {
+      await conn.query(
+        "UPDATE profiles SET status = 'suspended' WHERE user_id = ?",
+        [existing.target_user_id],
+      );
+      await conn.query(
+        `INSERT INTO notifications (user_id, type, title, message, metadata)
+         VALUES (?, ?, ?, ?, ?)`,
+        [
+          existing.target_user_id,
+          'report_update',
+          'Account Suspended',
+          'Your account was suspended after an administrator reviewed a tutor report.',
+          JSON.stringify({ report_id: id }),
+        ],
+      );
+    }
+
+    const reporterUpdateParts = [`Status: ${nextStatus}.`];
+    if (nextAction === 'warning_sent') {
+      reporterUpdateParts.push('A warning was sent to the reported account.');
+    } else if (nextAction === 'account_suspended') {
+      reporterUpdateParts.push('The reported account was suspended.');
+    } else if (nextAction === 'no_action') {
+      reporterUpdateParts.push('No direct action was taken.');
+    }
+
+    await conn.query(
+      `INSERT INTO notifications (user_id, type, title, message, metadata)
+       VALUES (?, ?, ?, ?, ?)`,
+      [
+        existing.reporter_user_id,
+        'report_update',
+        'Report Updated',
+        `Admin reviewed your report about ${existing.target_name || 'the reported account'}. ${reporterUpdateParts.join(' ')}`,
+        JSON.stringify({ report_id: id }),
+      ],
+    );
+
+    await conn.commit();
+  } catch (error) {
+    await conn.rollback();
+    throw error;
+  } finally {
+    conn.release();
+  }
+
+  res.json(await loadAdminTutorReportById(id));
 }));
 
 router.get('/messages', wrap(async (_req, res) => {

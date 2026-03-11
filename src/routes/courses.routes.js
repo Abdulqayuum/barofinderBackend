@@ -279,7 +279,7 @@ router.get('/tutor/student-progress', authMiddleware, wrap(async (req, res) => {
   let profiles = [];
   if (studentIds.length > 0) {
     const [pRows] = await db.query(
-      'SELECT user_id, full_name, email FROM profiles WHERE user_id IN (?)',
+      'SELECT user_id, full_name, email, role, is_parent FROM profiles WHERE user_id IN (?)',
       [studentIds]
     );
     profiles = pRows;
