@@ -296,6 +296,7 @@ router.post('/', authMiddleware, validateBody(upsertTutorSchema), wrap(async (re
   const defaultCurrency = await getAppSettingValue('currency_default', 'USD');
 
   const payload = {
+    pricing_type: readTutorPricingType(data.pricing_type) || DEFAULT_TUTOR_PRICING_TYPE,
     bio: data.bio,
     education: data.education || null,
     teaching_style: data.teaching_style || null,
@@ -307,9 +308,8 @@ router.post('/', authMiddleware, validateBody(upsertTutorSchema), wrap(async (re
     service_areas: JSON.stringify(data.service_areas || []),
     online_available: data.online_available !== undefined ? data.online_available : true,
     offline_available: data.offline_available !== undefined ? data.offline_available : false,
-    pricing_type: readTutorPricingType(data.pricing_type) || DEFAULT_TUTOR_PRICING_TYPE,
-    online_hourly: data.online_hourly || 0,
-    offline_hourly: data.offline_hourly ?? null,
+    online_hourly: (readTutorPricingType(data.pricing_type) || DEFAULT_TUTOR_PRICING_TYPE) === 'contract' ? 0 : (data.online_hourly || 0),
+    offline_hourly: (readTutorPricingType(data.pricing_type) || DEFAULT_TUTOR_PRICING_TYPE) === 'contract' ? null : (data.offline_hourly ?? null),
     currency: data.currency || defaultCurrency,
     availability: JSON.stringify(data.availability || []),
     packages: JSON.stringify(data.packages || []),
