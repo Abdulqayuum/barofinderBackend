@@ -69,6 +69,37 @@ function buildTutorFilters(query) {
   return { filters, params };
 }
 
+router.get('/stats', wrap(async (_req, res) => {
+  const [[verifiedTutorRow]] = await db.query(
+    `SELECT COUNT(*) AS verified_tutors
+     FROM tutor_profiles tp
+     JOIN profiles p ON p.user_id = tp.user_id
+     WHERE tp.verification_status = 'verified'
+       AND p.status = 'active'`
+  );
+
+  const [[averageRatingRow]] = await db.query(
+    `SELECT COALESCE(AVG(r.rating), 0) AS average_rating
+     FROM reviews r
+     JOIN tutor_profiles tp ON tp.id = r.tutor_id
+     JOIN profiles p ON p.user_id = tp.user_id
+     WHERE tp.verification_status = 'verified'
+       AND p.status = 'active'`
+  );
+
+  const [[lessonCompletionRow]] = await db.query(
+    `SELECT COUNT(*) AS completed_lessons
+     FROM lesson_progress
+     WHERE completed = TRUE`
+  );
+
+  res.json({
+    verified_tutors: Number(verifiedTutorRow?.verified_tutors || 0),
+    average_rating: Number(parseFloat(averageRatingRow?.average_rating || 0).toFixed(1)),
+    completed_lessons: Number(lessonCompletionRow?.completed_lessons || 0),
+  });
+}));
+
 router.get('/', wrap(async (req, res) => {
   const { page, limit, offset } = getPagination(req.query);
   const { filters, params } = buildTutorFilters(req.query);
