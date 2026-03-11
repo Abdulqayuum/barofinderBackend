@@ -67,3 +67,21 @@ export const institutionJobSchema = z.object({
   expires_at: optionalString,
   is_active: z.boolean().optional(),
 });
+
+export const institutionJobApplicationCreateSchema = z.object({
+  cover_message: z.preprocess((value) => {
+    if (typeof value !== 'string') return value;
+    return value.trim();
+  }, z.string().min(20).max(2000)),
+  document_url: optionalString,
+});
+
+export const institutionJobApplicationUpdateSchema = z.object({
+  status: z.enum(['pending', 'documents_requested', 'approved', 'rejected']).optional(),
+  institution_notes: z.preprocess((value) => {
+    if (value == null) return null;
+    if (typeof value !== 'string') return value;
+    const normalized = value.trim();
+    return normalized || null;
+  }, z.string().max(2000).optional().nullable()),
+});

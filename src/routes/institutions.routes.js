@@ -3,10 +3,15 @@ import { v4 as uuid } from 'uuid';
 import db from '../config/database.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { validateBody } from '../middleware/validation.js';
-import { institutionJobSchema, upsertInstitutionSchema } from '../schemas/institution.schema.js';
+import {
+  institutionJobApplicationCreateSchema,
+  institutionJobApplicationUpdateSchema,
+  institutionJobSchema,
+  upsertInstitutionSchema,
+} from '../schemas/institution.schema.js';
 import { getPagination } from '../utils/pagination.js';
 import { wrap } from '../middleware/error-handler.js';
-import { toPublicUploadUrl } from '../utils/uploads.js';
+import { toPublicUploadDocuments, toPublicUploadUrl } from '../utils/uploads.js';
 import {
   assertAppSettingVisibilityAllowed,
   assertPlatformWritable,
@@ -15,6 +20,7 @@ import {
 
 const router = Router();
 const INSTITUTION_APPROVAL_STATUSES = new Set(['pending', 'approved', 'rejected', 'suspended']);
+const JOB_APPLICATION_STATUSES = new Set(['pending', 'documents_requested', 'approved', 'rejected']);
 
 async function loadInstitutionAccessByUserId(userId, executor = db) {
   const [rows] = await executor.query(
@@ -83,6 +89,10 @@ function normalizeDateTime(value) {
   return normalized;
 }
 
+function normalizeJobApplicationStatus(status) {
+  return JOB_APPLICATION_STATUSES.has(status) ? status : 'pending';
+}
+
 function toInstitutionProfileResponse(profile) {
   if (!profile) return null;
 
@@ -121,6 +131,13 @@ function toInstitutionJobResponse(job) {
     application_url: job.application_url || null,
     expires_at: job.expires_at || null,
     is_active: !!job.is_active,
+    application_count: Number(job.application_count || 0),
+    pending_application_count: Number(job.pending_application_count || 0),
+    current_user_application_id: job.current_user_application_id || null,
+    current_user_application_status: job.current_user_application_status
+      ? normalizeJobApplicationStatus(job.current_user_application_status)
+      : null,
+    current_user_applied_at: job.current_user_applied_at || null,
     created_at: job.created_at,
     updated_at: job.updated_at,
     institution: {
@@ -132,6 +149,54 @@ function toInstitutionJobResponse(job) {
       website_url: job.website_url || null,
       contact_email: job.institution_contact_email || null,
       contact_phone: job.institution_contact_phone || null,
+    },
+  };
+}
+
+function toInstitutionJobApplicationResponse(application) {
+  if (!application) return null;
+
+  return {
+    id: application.id,
+    job_id: application.job_id,
+    institution_id: application.institution_id,
+    institution_user_id: application.institution_user_id,
+    tutor_user_id: application.tutor_user_id,
+    tutor_profile_id: application.tutor_profile_id,
+    cover_message: application.cover_message,
+    document_url: toPublicUploadUrl(application.document_url || null),
+    status: normalizeJobApplicationStatus(application.status),
+    institution_notes: application.institution_notes || null,
+    reviewed_at: application.reviewed_at || null,
+    created_at: application.created_at,
+    updated_at: application.updated_at,
+    job: {
+      id: application.job_id,
+      title: application.job_title,
+      city: application.job_city || null,
+      subject: application.job_subject || null,
+      level: application.job_level || null,
+      work_mode: application.job_work_mode || 'on_site',
+      employment_type: application.job_employment_type || 'part_time',
+    },
+    applicant: {
+      user_id: application.applicant_user_id,
+      tutor_profile_id: application.applicant_tutor_profile_id,
+      full_name: application.applicant_name || 'Tutor',
+      email: application.applicant_email || null,
+      phone: application.applicant_phone || null,
+      city: application.applicant_city || null,
+      profile_photo_url: toPublicUploadUrl(application.applicant_profile_photo_url || null),
+      verified: !!application.applicant_verified_badge,
+      open_to_work: !!application.applicant_open_to_work,
+      subjects: Array.isArray(application.applicant_subjects) ? application.applicant_subjects : [],
+      levels: Array.isArray(application.applicant_levels) ? application.applicant_levels : [],
+      education: application.applicant_education || null,
+      experience_years: Number(application.applicant_experience_years || 0),
+      bio: application.applicant_bio || null,
+      verification_documents: toPublicUploadDocuments(
+        Array.isArray(application.applicant_verification_documents) ? application.applicant_verification_documents : [],
+      ),
     },
   };
 }
@@ -160,16 +225,107 @@ async function loadInstitutionJobsByUserId(userId, executor = db) {
       ip.logo_url AS institution_logo_url,
       ip.website_url,
       ip.contact_email AS institution_contact_email,
-      ip.contact_phone AS institution_contact_phone
+      ip.contact_phone AS institution_contact_phone,
+      COALESCE(app_counts.application_count, 0) AS application_count,
+      COALESCE(app_counts.pending_application_count, 0) AS pending_application_count
      FROM institution_jobs ij
      JOIN institution_profiles ip ON ip.id = ij.institution_id
      JOIN profiles p ON p.user_id = ip.user_id
+     LEFT JOIN (
+       SELECT
+         job_id,
+         COUNT(*) AS application_count,
+         SUM(CASE WHEN status IN ('pending', 'documents_requested') THEN 1 ELSE 0 END) AS pending_application_count
+       FROM institution_job_applications
+       GROUP BY job_id
+     ) app_counts ON app_counts.job_id = ij.id
      WHERE ij.user_id = ?
      ORDER BY ij.created_at DESC`,
     [userId]
   );
 
   return rows.map((row) => toInstitutionJobResponse(row));
+}
+
+async function loadInstitutionJobApplicationsByUserId(userId, executor = db) {
+  const [rows] = await executor.query(
+    `SELECT
+      ija.*,
+      ip.institution_name,
+      ij.title AS job_title,
+      COALESCE(ij.city, ip.city, p_institution.city) AS job_city,
+      ij.subject AS job_subject,
+      ij.level AS job_level,
+      ij.work_mode AS job_work_mode,
+      ij.employment_type AS job_employment_type,
+      tutor.user_id AS applicant_user_id,
+      tutor.full_name AS applicant_name,
+      tutor.email AS applicant_email,
+      tutor.phone AS applicant_phone,
+      tutor.city AS applicant_city,
+      tp.id AS applicant_tutor_profile_id,
+      tp.profile_photo_url AS applicant_profile_photo_url,
+      tp.verified_badge AS applicant_verified_badge,
+      tp.open_to_work AS applicant_open_to_work,
+      tp.subjects AS applicant_subjects,
+      tp.levels AS applicant_levels,
+      tp.education AS applicant_education,
+      tp.experience_years AS applicant_experience_years,
+      tp.bio AS applicant_bio,
+      tp.verification_documents AS applicant_verification_documents
+     FROM institution_job_applications ija
+     JOIN institution_jobs ij ON ij.id = ija.job_id
+     JOIN institution_profiles ip ON ip.id = ija.institution_id
+     JOIN profiles p_institution ON p_institution.user_id = ip.user_id
+     JOIN tutor_profiles tp ON tp.id = ija.tutor_profile_id
+     JOIN profiles tutor ON tutor.user_id = ija.tutor_user_id
+     WHERE ija.institution_user_id = ?
+     ORDER BY FIELD(ija.status, 'pending', 'documents_requested', 'approved', 'rejected'), ija.created_at DESC`,
+    [userId]
+  );
+
+  return rows.map((row) => toInstitutionJobApplicationResponse(row));
+}
+
+async function loadInstitutionJobApplicationByIdForInstitution(applicationId, institutionUserId, executor = db) {
+  const [rows] = await executor.query(
+    `SELECT
+      ija.*,
+      ip.institution_name,
+      ij.title AS job_title,
+      COALESCE(ij.city, ip.city, p_institution.city) AS job_city,
+      ij.subject AS job_subject,
+      ij.level AS job_level,
+      ij.work_mode AS job_work_mode,
+      ij.employment_type AS job_employment_type,
+      tutor.user_id AS applicant_user_id,
+      tutor.full_name AS applicant_name,
+      tutor.email AS applicant_email,
+      tutor.phone AS applicant_phone,
+      tutor.city AS applicant_city,
+      tp.id AS applicant_tutor_profile_id,
+      tp.profile_photo_url AS applicant_profile_photo_url,
+      tp.verified_badge AS applicant_verified_badge,
+      tp.open_to_work AS applicant_open_to_work,
+      tp.subjects AS applicant_subjects,
+      tp.levels AS applicant_levels,
+      tp.education AS applicant_education,
+      tp.experience_years AS applicant_experience_years,
+      tp.bio AS applicant_bio,
+      tp.verification_documents AS applicant_verification_documents
+     FROM institution_job_applications ija
+     JOIN institution_jobs ij ON ij.id = ija.job_id
+     JOIN institution_profiles ip ON ip.id = ija.institution_id
+     JOIN profiles p_institution ON p_institution.user_id = ip.user_id
+     JOIN tutor_profiles tp ON tp.id = ija.tutor_profile_id
+     JOIN profiles tutor ON tutor.user_id = ija.tutor_user_id
+     WHERE ija.id = ?
+       AND ija.institution_user_id = ?
+     LIMIT 1`,
+    [applicationId, institutionUserId]
+  );
+
+  return toInstitutionJobApplicationResponse(rows[0] || null);
 }
 
 function buildInstitutionJobFilters(query) {
@@ -239,10 +395,26 @@ router.get('/jobs', authMiddleware, wrap(async (req, res) => {
       ip.logo_url AS institution_logo_url,
       ip.website_url,
       ip.contact_email AS institution_contact_email,
-      ip.contact_phone AS institution_contact_phone
+      ip.contact_phone AS institution_contact_phone,
+      COALESCE(app_counts.application_count, 0) AS application_count,
+      COALESCE(app_counts.pending_application_count, 0) AS pending_application_count,
+      current_app.id AS current_user_application_id,
+      current_app.status AS current_user_application_status,
+      current_app.created_at AS current_user_applied_at
     FROM institution_jobs ij
     JOIN institution_profiles ip ON ip.id = ij.institution_id
     JOIN profiles p ON p.user_id = ip.user_id
+    LEFT JOIN (
+      SELECT
+        job_id,
+        COUNT(*) AS application_count,
+        SUM(CASE WHEN status IN ('pending', 'documents_requested') THEN 1 ELSE 0 END) AS pending_application_count
+      FROM institution_job_applications
+      GROUP BY job_id
+    ) app_counts ON app_counts.job_id = ij.id
+    LEFT JOIN institution_job_applications current_app
+      ON current_app.job_id = ij.id
+      AND current_app.tutor_user_id = ?
     WHERE ${where}
     ORDER BY COALESCE(ij.expires_at, DATE_ADD(NOW(), INTERVAL 365 DAY)) ASC, ij.created_at DESC
     LIMIT ? OFFSET ?
@@ -256,7 +428,7 @@ router.get('/jobs', authMiddleware, wrap(async (req, res) => {
     WHERE ${where}
   `;
 
-  const [rows] = await db.query(listSql, [...params, limit, offset]);
+  const [rows] = await db.query(listSql, [req.user.id, ...params, limit, offset]);
   const [countRows] = await db.query(countSql, params);
   const total = countRows[0]?.total || 0;
 
@@ -378,6 +550,10 @@ router.get('/me/jobs', authMiddleware, institutionOnly, wrap(async (req, res) =>
   res.json(await loadInstitutionJobsByUserId(req.user.id));
 }));
 
+router.get('/me/job-applications', authMiddleware, institutionOnly, wrap(async (req, res) => {
+  res.json(await loadInstitutionJobApplicationsByUserId(req.user.id));
+}));
+
 router.post('/jobs', authMiddleware, institutionOnly, approvedInstitutionOnly, validateBody(institutionJobSchema), wrap(async (req, res) => {
   await assertPlatformWritable();
 
@@ -455,6 +631,180 @@ router.post('/jobs', authMiddleware, institutionOnly, approvedInstitutionOnly, v
 
   const jobs = await loadInstitutionJobsByUserId(req.user.id);
   res.status(201).json(jobs.find((job) => job.id === jobId) || null);
+}));
+
+router.post('/jobs/:id/apply', authMiddleware, validateBody(institutionJobApplicationCreateSchema), wrap(async (req, res) => {
+  await assertPlatformWritable();
+
+  const { id } = req.params;
+  const [jobRows] = await db.query(
+    `SELECT
+      ij.id,
+      ij.title,
+      ij.is_active,
+      ij.expires_at,
+      ij.institution_id,
+      ij.user_id AS institution_user_id,
+      ip.approval_status,
+      ip.institution_name
+     FROM institution_jobs ij
+     JOIN institution_profiles ip ON ip.id = ij.institution_id
+     WHERE ij.id = ?
+     LIMIT 1`,
+    [id]
+  );
+  const job = jobRows[0];
+  if (!job) {
+    return res.status(404).json({ error: 'Job not found', code: 'NOT_FOUND' });
+  }
+  if (!job.is_active || (job.expires_at && new Date(job.expires_at).getTime() < Date.now())) {
+    return res.status(400).json({ error: 'This job is no longer accepting applications.', code: 'BAD_REQUEST' });
+  }
+  if (job.approval_status !== 'approved') {
+    return res.status(400).json({ error: 'This institution is not currently accepting applications.', code: 'BAD_REQUEST' });
+  }
+  if (job.institution_user_id === req.user.id) {
+    return res.status(400).json({ error: 'You cannot apply to your own institution job.', code: 'BAD_REQUEST' });
+  }
+
+  const [applicantRows] = await db.query(
+    `SELECT
+      p.role,
+      p.status,
+      tp.id AS tutor_profile_id
+     FROM profiles p
+     LEFT JOIN tutor_profiles tp ON tp.user_id = p.user_id
+     WHERE p.user_id = ?
+     LIMIT 1`,
+    [req.user.id]
+  );
+  const applicant = applicantRows[0];
+  if (!applicant || applicant.role !== 'tutor' || !applicant.tutor_profile_id) {
+    return res.status(403).json({ error: 'Only tutors with a completed tutor profile can apply.', code: 'FORBIDDEN' });
+  }
+  if (applicant.status && applicant.status !== 'active') {
+    return res.status(403).json({ error: 'Your account is not allowed to apply to jobs.', code: 'FORBIDDEN' });
+  }
+
+  const [existingRows] = await db.query(
+    'SELECT id FROM institution_job_applications WHERE job_id = ? AND tutor_user_id = ? LIMIT 1',
+    [id, req.user.id]
+  );
+  if (existingRows[0]) {
+    return res.status(409).json({ error: 'You have already applied to this job.', code: 'CONFLICT' });
+  }
+
+  const applicationId = uuid();
+  const coverMessage = req.body.cover_message.trim();
+  const documentUrl = normalizeOptionalString(req.body.document_url);
+
+  await db.query(
+    `INSERT INTO institution_job_applications
+     (id, job_id, institution_id, institution_user_id, tutor_user_id, tutor_profile_id, cover_message, document_url, status, institution_notes, reviewed_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL)`,
+    [
+      applicationId,
+      id,
+      job.institution_id,
+      job.institution_user_id,
+      req.user.id,
+      applicant.tutor_profile_id,
+      coverMessage,
+      documentUrl,
+    ]
+  );
+
+  const [nameRows] = await db.query(
+    'SELECT full_name FROM profiles WHERE user_id = ? LIMIT 1',
+    [req.user.id]
+  );
+  const tutorName = nameRows[0]?.full_name || 'A tutor';
+
+  await db.query(
+    `INSERT INTO notifications (user_id, type, title, message, metadata)
+     VALUES (?, ?, ?, ?, ?)`,
+    [
+      job.institution_user_id,
+      'job_application_submitted',
+      'New job application',
+      `${tutorName} applied for ${job.title}.`,
+      JSON.stringify({
+        application_id: applicationId,
+        job_id: id,
+        path: '/institution-job-applications',
+      }),
+    ]
+  );
+
+  await db.query(
+    `INSERT INTO notifications (user_id, type, title, message, metadata)
+     VALUES (?, ?, ?, ?, ?)`,
+    [
+      req.user.id,
+      'job_application_submitted',
+      'Application submitted',
+      `Your application for ${job.title} was sent to ${job.institution_name || 'the institution'}.`,
+      JSON.stringify({
+        application_id: applicationId,
+        job_id: id,
+        path: '/tutor-jobs',
+      }),
+    ]
+  );
+
+  res.status(201).json({ id: applicationId, status: 'pending' });
+}));
+
+router.patch('/job-applications/:id', authMiddleware, institutionOnly, validateBody(institutionJobApplicationUpdateSchema), wrap(async (req, res) => {
+  await assertPlatformWritable();
+
+  const { id } = req.params;
+  const existing = await loadInstitutionJobApplicationByIdForInstitution(id, req.user.id);
+  if (!existing) {
+    return res.status(404).json({ error: 'Application not found', code: 'NOT_FOUND' });
+  }
+
+  const nextStatus = req.body.status ? normalizeJobApplicationStatus(req.body.status) : existing.status;
+  const nextNotes = Object.prototype.hasOwnProperty.call(req.body, 'institution_notes')
+    ? normalizeOptionalString(req.body.institution_notes)
+    : normalizeOptionalString(existing.institution_notes);
+
+  if (nextStatus === existing.status && nextNotes === normalizeOptionalString(existing.institution_notes)) {
+    return res.json(existing);
+  }
+
+  await db.query(
+    `UPDATE institution_job_applications
+     SET status = ?, institution_notes = ?, reviewed_at = NOW()
+     WHERE id = ?`,
+    [nextStatus, nextNotes, id]
+  );
+
+  const statusMessages = {
+    pending: `Your application for ${existing.job.title} is under review.`,
+    documents_requested: `The institution requested more documents or details for ${existing.job.title}.`,
+    approved: `The institution approved your application for ${existing.job.title}.`,
+    rejected: `The institution declined your application for ${existing.job.title}.`,
+  };
+
+  const noteSuffix = nextNotes ? ` Note: ${nextNotes}` : '';
+  await db.query(
+    `INSERT INTO notifications (user_id, type, title, message, metadata)
+     VALUES (?, ?, ?, ?, ?)`,
+    [
+      existing.tutor_user_id,
+      'job_application_update',
+      'Application updated',
+      `${statusMessages[nextStatus] || statusMessages.pending}${noteSuffix}`,
+      JSON.stringify({
+        application_id: existing.id,
+        job_id: existing.job_id,
+        path: '/tutor-jobs',
+      }),
+    ]
+  );
+
+  res.json(await loadInstitutionJobApplicationByIdForInstitution(id, req.user.id));
 }));
 
 router.patch('/jobs/:id', authMiddleware, institutionOnly, approvedInstitutionOnly, validateBody(institutionJobSchema.partial()), wrap(async (req, res) => {
