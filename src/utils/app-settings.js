@@ -32,6 +32,19 @@ export const APP_SETTINGS_CATALOG = [
   { key: 'show_learner_report_tutor_button', defaultValue: 'true', isPublic: true },
   { key: 'email_important_notifications', defaultValue: 'false', isPublic: false },
   { key: 'email_notification_services', defaultValue: IMPORTANT_NOTIFICATION_EMAIL_SERVICE_DEFAULTS, isPublic: false },
+  { key: 'navbar_home_visibility', defaultValue: 'public', isPublic: true },
+  { key: 'navbar_tutors_visibility', defaultValue: 'public', isPublic: true },
+  { key: 'navbar_tutor_jobs_visibility', defaultValue: 'signed_in', isPublic: true },
+  { key: 'navbar_courses_visibility', defaultValue: 'public', isPublic: true },
+  { key: 'navbar_my_learning_visibility', defaultValue: 'signed_in', isPublic: true },
+  { key: 'navbar_messages_visibility', defaultValue: 'signed_in', isPublic: true },
+  { key: 'navbar_subscriptions_visibility', defaultValue: 'signed_in', isPublic: true },
+  { key: 'navbar_become_tutor_visibility', defaultValue: 'signed_in', isPublic: true },
+  { key: 'navbar_my_courses_visibility', defaultValue: 'tutors', isPublic: true },
+  { key: 'navbar_institution_portal_visibility', defaultValue: 'institutions', isPublic: true },
+  { key: 'navbar_admin_visibility', defaultValue: 'admins', isPublic: true },
+  { key: 'navbar_login_visibility', defaultValue: 'public', isPublic: true },
+  { key: 'navbar_signup_visibility', defaultValue: 'public', isPublic: true },
   { key: 'courses_visibility', defaultValue: 'public', isPublic: true },
   { key: 'tutor_jobs_visibility', defaultValue: 'public_except_students', isPublic: true },
   { key: 'max_file_upload_mb', defaultValue: '5', isPublic: true },
@@ -129,8 +142,11 @@ export function contentVisibilityRequiresAuth(value) {
 export function canAccessContentVisibility(value, viewer = {}) {
   const visibility = normalizeContentVisibilityValue(value);
   const role = typeof viewer.role === 'string' ? viewer.role.trim().toLowerCase() : null;
+  const roles = Array.isArray(viewer.roles)
+    ? viewer.roles.map((item) => String(item).trim().toLowerCase()).filter(Boolean)
+    : [];
   const isAuthenticated = Boolean(viewer.isAuthenticated || role);
-  const isAdmin = role === 'admin';
+  const isAdmin = viewer.is_admin === true || role === 'admin' || roles.includes('admin');
   const isParent = role === 'parent' || viewer.is_parent === true;
   const isStudent = role === 'student' && !isParent;
   const isTutor = role === 'tutor';
@@ -180,7 +196,18 @@ export async function loadAppSettingViewerAccess(userId) {
   }
 
   const [rows] = await db.query(
-    'SELECT role, is_parent FROM profiles WHERE user_id = ? LIMIT 1',
+    `SELECT
+       p.role,
+       p.is_parent,
+       EXISTS(
+         SELECT 1
+         FROM user_roles ur
+         WHERE ur.user_id = p.user_id
+           AND ur.role = 'admin'
+       ) AS is_admin
+     FROM profiles p
+     WHERE p.user_id = ?
+     LIMIT 1`,
     [userId],
   );
   const profile = rows[0] || null;
@@ -189,6 +216,7 @@ export async function loadAppSettingViewerAccess(userId) {
     isAuthenticated: true,
     role: typeof profile?.role === 'string' ? profile.role.toLowerCase() : null,
     is_parent: Boolean(profile?.is_parent),
+    is_admin: Boolean(profile?.is_admin),
   };
 }
 
