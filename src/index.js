@@ -9,6 +9,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { testConnection } from './config/database.js';
 import { validateSecurityConfig } from './config/security.js';
+import { ensureOtpCodesSchema } from './utils/schema.js';
 import { setupWebSocket } from './websocket/index.js';
 import { apiRateLimiter } from './middleware/rate-limit.js';
 import { errorHandler } from './middleware/error-handler.js';
@@ -132,6 +133,7 @@ const PORT = process.env.PORT || 3000;
 async function start() {
   validateSecurityConfig();
   await testConnection();
+  await ensureOtpCodesSchema();
   server.listen(PORT, () => {
     console.log(`BaroFinder API running on port ${PORT}`);
   });

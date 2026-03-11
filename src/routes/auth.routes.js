@@ -66,25 +66,39 @@ router.post('/request-signup-otp', authRateLimiter, validateBody(requestOtpSchem
   const { email } = req.body;
   const [existing] = await db.query('SELECT id FROM users WHERE email = ?', [email]);
   if (existing.length > 0) {
-    return res.status(409).json({ error: 'Email already registered', code: 'CONFLICT' });
+    return res.json({
+      message: 'Email already registered',
+      code: 'ALREADY_REGISTERED',
+      already_registered: true,
+      verification_required: false,
+    });
   }
 
   if (!EMAIL_VERIFICATION_REQUIRED) {
-    return res.json({ message: 'No verification required' });
+    return res.json({
+      message: 'No verification required',
+      already_registered: false,
+      verification_required: false,
+    });
   }
 
   const otp = generateOtpCode();
   const tokenExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
   const otpHash = hashSensitiveToken('signup-otp', `${email}:${otp}`);
 
-  await db.query(`
-    INSERT INTO otp_codes (email, otp, expires_at) VALUES (?, ?, ?)
-    ON DUPLICATE KEY UPDATE otp = VALUES(otp), expires_at = VALUES(expires_at)
-  `, [email, otpHash, tokenExpires]);
+  await db.query('DELETE FROM otp_codes WHERE email = ?', [email]);
+  await db.query(
+    'INSERT INTO otp_codes (email, otp, expires_at) VALUES (?, ?, ?)',
+    [email, otpHash, tokenExpires],
+  );
 
   await sendOTP(email, otp).catch(console.error);
 
-  res.json({ message: 'A verification code was sent.' });
+  res.json({
+    message: 'A verification code was sent.',
+    already_registered: false,
+    verification_required: true,
+  });
 }));
 
 router.post('/signup', authRateLimiter, validateBody(signupSchema), wrap(async (req, res) => {
