@@ -17,6 +17,10 @@ export const APP_SETTINGS_CATALOG = [
   { key: 'support_email', defaultValue: 'support@barofinder.com', isPublic: true },
   { key: 'support_phone', defaultValue: '', isPublic: true },
   { key: 'support_whatsapp', defaultValue: '', isPublic: true },
+  { key: 'show_support_contact_section', defaultValue: 'true', isPublic: true },
+  { key: 'show_support_email', defaultValue: 'true', isPublic: true },
+  { key: 'show_support_phone', defaultValue: 'true', isPublic: true },
+  { key: 'show_support_whatsapp', defaultValue: 'true', isPublic: true },
   { key: 'currency_default', defaultValue: 'USD', isPublic: true },
   { key: 'maintenance_mode', defaultValue: 'false', isPublic: true },
   {
