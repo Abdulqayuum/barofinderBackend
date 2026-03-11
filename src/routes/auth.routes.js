@@ -8,7 +8,7 @@ import { validateBody } from '../middleware/validation.js';
 import { authRateLimiter } from '../middleware/rate-limit.js';
 import { loginSchema, refreshSchema, resetPasswordSchema, signupSchema, updatePasswordSchema, requestOtpSchema } from '../schemas/auth.schema.js';
 import { wrap } from '../middleware/error-handler.js';
-import { sendOTP } from '../utils/mailer.js';
+import { buildPasswordResetUrl, sendOTP, sendPasswordResetEmail } from '../utils/mailer.js';
 import { toPublicUploadUrl } from '../utils/uploads.js';
 import { assertAppSettingEnabled, assertPlatformWritable } from '../utils/app-settings.js';
 
@@ -199,12 +199,32 @@ router.post('/logout', authMiddleware, wrap(async (_req, res) => {
 
 router.post('/reset-password', authRateLimiter, validateBody(resetPasswordSchema), wrap(async (req, res) => {
   const { email } = req.body;
-  const token = uuid();
-  const expires = new Date(Date.now() + 1000 * 60 * 30);
-  await db.query(
-    'UPDATE users SET reset_token = ?, reset_token_expires = ? WHERE email = ?',
-    [token, expires, email]
+  const [rows] = await db.query(
+    `SELECT u.id, u.email, COALESCE(p.full_name, 'there') AS full_name
+     FROM users u
+     LEFT JOIN profiles p ON p.user_id = u.id
+     WHERE u.email = ?
+     LIMIT 1`,
+    [email]
   );
+  const user = rows[0];
+
+  if (user) {
+    const token = uuid();
+    const expires = new Date(Date.now() + 1000 * 60 * 30);
+
+    await db.query(
+      'UPDATE users SET reset_token = ?, reset_token_expires = ? WHERE email = ?',
+      [token, expires, email]
+    );
+
+    await sendPasswordResetEmail({
+      to: user.email,
+      recipientName: user.full_name,
+      resetUrl: buildPasswordResetUrl(token),
+    });
+  }
+
   res.json({ message: 'If the email exists, a reset link was sent.' });
 }));
 
