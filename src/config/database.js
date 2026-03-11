@@ -1,3 +1,5 @@
+// Shared MySQL pool for the whole backend. JSON columns are parsed here so
+// route files can work with plain JS values instead of raw strings.
 import mysql from 'mysql2/promise';
 import dotenv from 'dotenv';
 

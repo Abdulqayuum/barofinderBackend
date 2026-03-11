@@ -1,3 +1,5 @@
+// Backend bootstrap. This is the single place where middleware, route groups,
+// static uploads, error handling, and websocket setup are wired together.
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';

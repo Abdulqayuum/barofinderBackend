@@ -1,3 +1,5 @@
+// Platform settings catalog plus helpers for reading visibility rules and
+// toggles. If a feature is controlled from Admin Settings, start here.
 import { v4 as uuid } from 'uuid';
 import db from '../config/database.js';
 import { toPublicUploadUrl } from './uploads.js';
