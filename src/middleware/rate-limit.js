@@ -11,12 +11,8 @@ const authWritePaths = new Set([
 ]);
 
 function getClientKey(req) {
-  const forwardedFor = req.headers['x-forwarded-for'];
-  if (typeof forwardedFor === 'string' && forwardedFor.trim()) {
-    return forwardedFor.split(',')[0].trim();
-  }
-  if (Array.isArray(forwardedFor) && forwardedFor.length > 0) {
-    return forwardedFor[0].split(',')[0].trim();
+  if (req.user?.id) {
+    return `user:${req.user.id}`;
   }
   return req.ip || req.socket?.remoteAddress || 'unknown';
 }
@@ -49,4 +45,10 @@ export const apiRateLimiter = createRateLimiter({
   windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '900000', 10),
   max: parseInt(process.env.RATE_LIMIT_MAX || '500', 10),
   shouldSkip: (req) => authWritePaths.has(req.path),
+});
+
+export const uploadRateLimiter = createRateLimiter({
+  windowMs: parseInt(process.env.UPLOAD_RATE_LIMIT_WINDOW_MS || process.env.RATE_LIMIT_WINDOW_MS || '900000', 10),
+  max: parseInt(process.env.UPLOAD_RATE_LIMIT_MAX || '30', 10),
+  shouldSkip: () => false,
 });

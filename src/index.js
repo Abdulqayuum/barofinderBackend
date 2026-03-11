@@ -5,7 +5,10 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import http from 'http';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { testConnection } from './config/database.js';
+import { validateSecurityConfig } from './config/security.js';
 import { setupWebSocket } from './websocket/index.js';
 import { apiRateLimiter } from './middleware/rate-limit.js';
 import { errorHandler } from './middleware/error-handler.js';
@@ -29,6 +32,9 @@ import institutionRoutes from './routes/institutions.routes.js';
 
 const app = express();
 const server = http.createServer(app);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const uploadsDir = path.resolve(__dirname, '..', process.env.UPLOAD_DIR || 'uploads');
 
 const trustProxyValue = process.env.TRUST_PROXY;
 if (trustProxyValue === 'true') {
@@ -86,8 +92,17 @@ app.use(helmet({
 }));
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
-app.use(express.json({ limit: '1mb' }));
-app.use('/uploads', express.static('uploads'));
+app.disable('x-powered-by');
+app.use(express.json({ limit: '1mb', strict: true }));
+app.use(express.urlencoded({ extended: false, limit: '100kb' }));
+app.use('/uploads', express.static(uploadsDir, {
+  dotfiles: 'ignore',
+  fallthrough: false,
+  index: false,
+  setHeaders: (res) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+  },
+}));
 app.use('/api', apiRateLimiter);
 
 app.use('/api/auth', authRoutes);
@@ -115,6 +130,7 @@ app.set('io', io);
 const PORT = process.env.PORT || 3000;
 
 async function start() {
+  validateSecurityConfig();
   await testConnection();
   server.listen(PORT, () => {
     console.log(`BaroFinder API running on port ${PORT}`);

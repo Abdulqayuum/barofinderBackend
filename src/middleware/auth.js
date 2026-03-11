@@ -1,12 +1,16 @@
 import jwt from 'jsonwebtoken';
 import db from '../config/database.js';
+import { getJwtSecret } from '../config/security.js';
 
 export async function authMiddleware(req, res, next) {
   const token = req.headers.authorization?.replace('Bearer ', '');
   if (!token) return res.status(401).json({ error: 'No token provided', code: 'UNAUTHORIZED' });
 
   try {
-    const payload = jwt.verify(token, process.env.JWT_SECRET || '');
+    const payload = jwt.verify(token, getJwtSecret());
+    if (payload.type !== 'access') {
+      return res.status(401).json({ error: 'Invalid or expired token', code: 'UNAUTHORIZED' });
+    }
     req.user = { id: payload.sub, email: payload.email };
     try {
       const [rows] = await db.query('SELECT status FROM profiles WHERE user_id = ?', [req.user.id]);
@@ -27,8 +31,10 @@ export function optionalAuth(req, res, next) {
   const token = req.headers.authorization?.replace('Bearer ', '');
   if (token) {
     try {
-      const payload = jwt.verify(token, process.env.JWT_SECRET || '');
-      req.user = { id: payload.sub, email: payload.email };
+      const payload = jwt.verify(token, getJwtSecret());
+      if (payload.type === 'access') {
+        req.user = { id: payload.sub, email: payload.email };
+      }
     } catch {
       // ignore
     }

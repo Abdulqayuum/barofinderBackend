@@ -8,6 +8,14 @@ import { wrap } from '../middleware/error-handler.js';
 
 const router = Router();
 
+async function loadAuthorizedConversation(conversationId, userId) {
+  const [rows] = await db.query('SELECT * FROM conversations WHERE id = ?', [conversationId]);
+  const conversation = rows[0];
+  if (!conversation) return null;
+  if (conversation.student_id !== userId && conversation.tutor_id !== userId) return false;
+  return conversation;
+}
+
 router.get('/', authMiddleware, wrap(async (req, res) => {
   const userId = req.user.id;
   const [rows] = await db.query(
@@ -70,10 +78,9 @@ router.post('/', authMiddleware, validateBody(conversationCreateSchema), wrap(as
 
 router.get('/:id/messages', authMiddleware, wrap(async (req, res) => {
   const { id } = req.params;
-  const [convRows] = await db.query('SELECT * FROM conversations WHERE id = ?', [id]);
-  const conv = convRows[0];
-  if (!conv) return res.status(404).json({ error: 'Conversation not found', code: 'NOT_FOUND' });
-  if (conv.student_id !== req.user.id && conv.tutor_id !== req.user.id) {
+  const conversation = await loadAuthorizedConversation(id, req.user.id);
+  if (conversation === null) return res.status(404).json({ error: 'Conversation not found', code: 'NOT_FOUND' });
+  if (conversation === false) {
     return res.status(403).json({ error: 'Forbidden', code: 'FORBIDDEN' });
   }
 
@@ -85,10 +92,9 @@ router.post('/:id/messages', authMiddleware, validateBody(messageCreateSchema), 
   const { id } = req.params;
   const { content } = req.body;
 
-  const [convRows] = await db.query('SELECT * FROM conversations WHERE id = ?', [id]);
-  const conv = convRows[0];
-  if (!conv) return res.status(404).json({ error: 'Conversation not found', code: 'NOT_FOUND' });
-  if (conv.student_id !== req.user.id && conv.tutor_id !== req.user.id) {
+  const conversation = await loadAuthorizedConversation(id, req.user.id);
+  if (conversation === null) return res.status(404).json({ error: 'Conversation not found', code: 'NOT_FOUND' });
+  if (conversation === false) {
     return res.status(403).json({ error: 'Forbidden', code: 'FORBIDDEN' });
   }
 
@@ -98,7 +104,7 @@ router.post('/:id/messages', authMiddleware, validateBody(messageCreateSchema), 
     [msgId, id, req.user.id, content]
   );
 
-  const recipientId = conv.student_id === req.user.id ? conv.tutor_id : conv.student_id;
+  const recipientId = conversation.student_id === req.user.id ? conversation.tutor_id : conversation.student_id;
   await db.query(
     `INSERT INTO notifications (user_id, type, title, message, metadata)
      VALUES (?, ?, ?, ?, ?)`,
@@ -124,6 +130,12 @@ router.post('/:id/messages', authMiddleware, validateBody(messageCreateSchema), 
 
 router.patch('/:id/messages/read', authMiddleware, wrap(async (req, res) => {
   const { id } = req.params;
+  const conversation = await loadAuthorizedConversation(id, req.user.id);
+  if (conversation === null) return res.status(404).json({ error: 'Conversation not found', code: 'NOT_FOUND' });
+  if (conversation === false) {
+    return res.status(403).json({ error: 'Forbidden', code: 'FORBIDDEN' });
+  }
+
   await db.query(
     'UPDATE messages SET is_read = TRUE WHERE conversation_id = ? AND sender_id != ?',
     [id, req.user.id]

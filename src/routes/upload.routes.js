@@ -2,6 +2,7 @@ import { Router } from 'express';
 import db from '../config/database.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { requireRole } from '../middleware/roles.js';
+import { uploadRateLimiter } from '../middleware/rate-limit.js';
 import {
   tutorPhotoUpload,
   institutionLogoUpload,
@@ -40,7 +41,7 @@ function withDynamicUpload(createUpload, fieldName, settingKey, fallbackMb) {
           err.message = `File is too large. Maximum allowed size is ${maxMb} MB.`;
         } else {
           err.status = 400;
-          err.code = err.code || 'VALIDATION_ERROR';
+          err.code = 'VALIDATION_ERROR';
         }
 
         next(err);
@@ -51,7 +52,7 @@ function withDynamicUpload(createUpload, fieldName, settingKey, fallbackMb) {
   };
 }
 
-router.post('/tutor-photo', authMiddleware, withDynamicUpload(tutorPhotoUpload, 'photo', 'max_file_upload_mb', 5), wrap(async (req, res) => {
+router.post('/tutor-photo', authMiddleware, uploadRateLimiter, withDynamicUpload(tutorPhotoUpload, 'photo', 'max_file_upload_mb', 5), wrap(async (req, res) => {
   const file = req.file;
   if (!file) return res.status(400).json({ error: 'No file uploaded', code: 'VALIDATION_ERROR' });
 
@@ -60,7 +61,7 @@ router.post('/tutor-photo', authMiddleware, withDynamicUpload(tutorPhotoUpload, 
   res.json({ url: toPublicUploadUrl(path) });
 }));
 
-router.post('/institution-logo', authMiddleware, withDynamicUpload(institutionLogoUpload, 'logo', 'max_file_upload_mb', 5), wrap(async (req, res) => {
+router.post('/institution-logo', authMiddleware, uploadRateLimiter, withDynamicUpload(institutionLogoUpload, 'logo', 'max_file_upload_mb', 5), wrap(async (req, res) => {
   const file = req.file;
   if (!file) return res.status(400).json({ error: 'No file uploaded', code: 'VALIDATION_ERROR' });
 
@@ -79,7 +80,7 @@ router.post('/institution-logo', authMiddleware, withDynamicUpload(institutionLo
   res.json({ url: toPublicUploadUrl(path) });
 }));
 
-router.post('/course-cover', authMiddleware, withDynamicUpload(courseCoverUpload, 'cover', 'max_file_upload_mb', 5), wrap(async (req, res) => {
+router.post('/course-cover', authMiddleware, uploadRateLimiter, withDynamicUpload(courseCoverUpload, 'cover', 'max_file_upload_mb', 5), wrap(async (req, res) => {
   const file = req.file;
   if (!file) return res.status(400).json({ error: 'No file uploaded', code: 'VALIDATION_ERROR' });
 
@@ -87,7 +88,7 @@ router.post('/course-cover', authMiddleware, withDynamicUpload(courseCoverUpload
   res.json({ url: toPublicUploadUrl(path) });
 }));
 
-router.post('/site-logo', authMiddleware, requireRole('admin'), withDynamicUpload(siteLogoUpload, 'logo', 'max_file_upload_mb', 5), wrap(async (req, res) => {
+router.post('/site-logo', authMiddleware, requireRole('admin'), uploadRateLimiter, withDynamicUpload(siteLogoUpload, 'logo', 'max_file_upload_mb', 5), wrap(async (req, res) => {
   const file = req.file;
   if (!file) return res.status(400).json({ error: 'No file uploaded', code: 'VALIDATION_ERROR' });
 
@@ -96,7 +97,7 @@ router.post('/site-logo', authMiddleware, requireRole('admin'), withDynamicUploa
   res.json({ url: toPublicUploadUrl(path) });
 }));
 
-router.post('/course-asset', authMiddleware, withDynamicUpload(courseAssetUpload, 'file', 'max_course_asset_size_mb', 100), wrap(async (req, res) => {
+router.post('/course-asset', authMiddleware, uploadRateLimiter, withDynamicUpload(courseAssetUpload, 'file', 'max_course_asset_size_mb', 100), wrap(async (req, res) => {
   const file = req.file;
   if (!file) return res.status(400).json({ error: 'No file uploaded', code: 'VALIDATION_ERROR' });
 
@@ -104,7 +105,7 @@ router.post('/course-asset', authMiddleware, withDynamicUpload(courseAssetUpload
   res.json({ url: toPublicUploadUrl(path) });
 }));
 
-router.post('/tutor-document', authMiddleware, withDynamicUpload(tutorDocumentUpload, 'document', 'max_file_upload_mb', 10), wrap(async (req, res) => {
+router.post('/tutor-document', authMiddleware, uploadRateLimiter, withDynamicUpload(tutorDocumentUpload, 'document', 'max_file_upload_mb', 10), wrap(async (req, res) => {
   const file = req.file;
   if (!file) return res.status(400).json({ error: 'No file uploaded', code: 'VALIDATION_ERROR' });
 
@@ -124,7 +125,7 @@ router.post('/tutor-document', authMiddleware, withDynamicUpload(tutorDocumentUp
   res.json({ url: toPublicUploadUrl(path), documents: toPublicUploadDocuments(docs) });
 }));
 
-router.post('/job-application-document', authMiddleware, withDynamicUpload(jobApplicationDocumentUpload, 'document', 'max_file_upload_mb', 10), wrap(async (req, res) => {
+router.post('/job-application-document', authMiddleware, uploadRateLimiter, withDynamicUpload(jobApplicationDocumentUpload, 'document', 'max_file_upload_mb', 10), wrap(async (req, res) => {
   const file = req.file;
   if (!file) return res.status(400).json({ error: 'No file uploaded', code: 'VALIDATION_ERROR' });
 

@@ -3,10 +3,25 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { v4 as uuid } from 'uuid';
 import db from '../config/database.js';
+import {
+  generateOtpCode,
+  generateSecureToken,
+  getJwtSecret,
+  hashSensitiveToken,
+  isLegacyPlaintextPasswordFallbackEnabled,
+} from '../config/security.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { validateBody } from '../middleware/validation.js';
 import { authRateLimiter } from '../middleware/rate-limit.js';
-import { loginSchema, refreshSchema, resetPasswordSchema, signupSchema, updatePasswordSchema, requestOtpSchema } from '../schemas/auth.schema.js';
+import {
+  confirmResetSchema,
+  loginSchema,
+  refreshSchema,
+  resetPasswordSchema,
+  signupSchema,
+  updatePasswordSchema,
+  requestOtpSchema,
+} from '../schemas/auth.schema.js';
 import { wrap } from '../middleware/error-handler.js';
 import { buildPasswordResetUrl, sendOTP, sendPasswordResetEmail } from '../utils/mailer.js';
 import { toPublicUploadUrl } from '../utils/uploads.js';
@@ -14,7 +29,6 @@ import { assertAppSettingEnabled, assertPlatformWritable } from '../utils/app-se
 
 const router = Router();
 
-const JWT_SECRET = process.env.JWT_SECRET || 'change-me';
 const JWT_EXPIRES_IN = parseInt(process.env.JWT_EXPIRES_IN || '3600', 10);
 const BCRYPT_SALT_ROUNDS = parseInt(process.env.BCRYPT_SALT_ROUNDS || '10', 10);
 const EMAIL_VERIFICATION_REQUIRED = process.env.EMAIL_VERIFICATION_REQUIRED === 'true';
@@ -28,17 +42,18 @@ function toAuthProfileResponse(profile) {
 }
 
 function signAccessToken(userId, email) {
-  return jwt.sign({ sub: userId, email, type: 'access' }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+  return jwt.sign({ sub: userId, email, type: 'access' }, getJwtSecret(), { expiresIn: JWT_EXPIRES_IN });
 }
 
 function signRefreshToken(userId) {
-  return jwt.sign({ sub: userId, type: 'refresh' }, JWT_SECRET, { expiresIn: '7d' });
+  return jwt.sign({ sub: userId, type: 'refresh' }, getJwtSecret(), { expiresIn: '7d' });
 }
 
 async function verifyPassword(inputPassword, storedPasswordHash) {
   if (!storedPasswordHash) return false;
   // Support manual DB inserts during development where password_hash may be plain text.
   if (!storedPasswordHash.startsWith('$2')) {
+    if (!isLegacyPlaintextPasswordFallbackEnabled()) return false;
     return inputPassword === storedPasswordHash;
   }
   return bcrypt.compare(inputPassword, storedPasswordHash);
@@ -58,13 +73,14 @@ router.post('/request-signup-otp', authRateLimiter, validateBody(requestOtpSchem
     return res.json({ message: 'No verification required' });
   }
 
-  const otp = Math.floor(100000 + Math.random() * 900000).toString();
+  const otp = generateOtpCode();
   const tokenExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+  const otpHash = hashSensitiveToken('signup-otp', `${email}:${otp}`);
 
   await db.query(`
     INSERT INTO otp_codes (email, otp, expires_at) VALUES (?, ?, ?)
     ON DUPLICATE KEY UPDATE otp = VALUES(otp), expires_at = VALUES(expires_at)
-  `, [email, otp, tokenExpires]);
+  `, [email, otpHash, tokenExpires]);
 
   await sendOTP(email, otp).catch(console.error);
 
@@ -86,8 +102,10 @@ router.post('/signup', authRateLimiter, validateBody(signupSchema), wrap(async (
     if (!data.otp) {
       return res.status(400).json({ error: 'Verification code is required', code: 'BAD_REQUEST' });
     }
-    const [otpRows] = await db.query('SELECT otp FROM otp_codes WHERE email = ? AND otp = ? AND expires_at > NOW()', [data.email, data.otp]);
-    if (otpRows.length === 0) {
+    const [otpRows] = await db.query('SELECT otp FROM otp_codes WHERE email = ? AND expires_at > NOW()', [data.email]);
+    const otpRow = otpRows[0];
+    const submittedOtpHash = hashSensitiveToken('signup-otp', `${data.email}:${data.otp}`);
+    if (!otpRow || otpRow.otp !== submittedOtpHash) {
       return res.status(400).json({ error: 'Invalid or expired verification code', code: 'BAD_REQUEST' });
     }
   }
@@ -181,7 +199,7 @@ router.post('/login', authRateLimiter, validateBody(loginSchema), wrap(async (re
 router.post('/refresh', authRateLimiter, validateBody(refreshSchema), wrap(async (req, res) => {
   const { refresh_token } = req.body;
   try {
-    const payload = jwt.verify(refresh_token, JWT_SECRET);
+    const payload = jwt.verify(refresh_token, getJwtSecret());
     if (payload.type !== 'refresh') throw new Error('Invalid token');
     const [rows] = await db.query('SELECT email FROM users WHERE id = ?', [payload.sub]);
     const user = rows[0];
@@ -210,12 +228,13 @@ router.post('/reset-password', authRateLimiter, validateBody(resetPasswordSchema
   const user = rows[0];
 
   if (user) {
-    const token = uuid();
+    const token = generateSecureToken();
+    const tokenHash = hashSensitiveToken('password-reset', token);
     const expires = new Date(Date.now() + 1000 * 60 * 30);
 
     await db.query(
       'UPDATE users SET reset_token = ?, reset_token_expires = ? WHERE email = ?',
-      [token, expires, email]
+      [tokenHash, expires, email]
     );
 
     await sendPasswordResetEmail({
@@ -240,15 +259,19 @@ router.post('/update-password', authMiddleware, validateBody(updatePasswordSchem
   }
 
   const passwordHash = await bcrypt.hash(new_password, BCRYPT_SALT_ROUNDS);
-  await db.query('UPDATE users SET password_hash = ? WHERE id = ?', [passwordHash, req.user.id]);
+  await db.query(
+    'UPDATE users SET password_hash = ?, reset_token = NULL, reset_token_expires = NULL WHERE id = ?',
+    [passwordHash, req.user.id]
+  );
   res.json({ message: 'Password updated' });
 }));
 
-router.post('/confirm-reset', authRateLimiter, wrap(async (req, res) => {
+router.post('/confirm-reset', authRateLimiter, validateBody(confirmResetSchema), wrap(async (req, res) => {
   const { token, password } = req.body;
+  const tokenHash = hashSensitiveToken('password-reset', token);
   const [rows] = await db.query(
     'SELECT id FROM users WHERE reset_token = ? AND reset_token_expires > NOW()',
-    [token]
+    [tokenHash]
   );
   const user = rows[0];
   if (!user) return res.status(401).json({ error: 'Invalid or expired token', code: 'UNAUTHORIZED' });

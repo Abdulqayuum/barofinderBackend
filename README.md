@@ -48,8 +48,10 @@ Key variables:
 - `PORT`
 - `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`
 - `JWT_SECRET`
+- `TOKEN_HASH_SECRET` (optional extra secret for hashing OTP/reset tokens)
 - `CORS_ORIGIN` (comma-separated allowed origins)
 - `EMAIL_VERIFICATION_REQUIRED` (`false` for local dev)
+- `ALLOW_LEGACY_PLAINTEXT_PASSWORDS` (`false` unless you explicitly need old dev-only plain text passwords)
 
 ## 5) Run
 
