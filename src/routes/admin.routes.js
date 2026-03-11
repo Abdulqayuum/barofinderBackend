@@ -1909,10 +1909,11 @@ router.get('/activity-logs', wrap(async (_req, res) => {
 
 router.get('/notifications', wrap(async (_req, res) => {
   const [rows] = await db.query(
-    `SELECT n.*, p.full_name
-     FROM notifications n
-     LEFT JOIN profiles p ON p.user_id = n.user_id
-     ORDER BY n.created_at DESC`
+    `SELECT *
+     FROM notifications
+     WHERE user_id IS NULL
+     ORDER BY created_at DESC
+     LIMIT 50`
   );
   res.json(rows);
 }));
@@ -2179,12 +2180,6 @@ router.get('/activity-logs', wrap(async (_req, res) => {
 }));
 
 /* ─── Notifications ────────────────────────────────────────── */
-router.get('/notifications', wrap(async (_req, res) => {
-  // Fix: some DBs use user_id IS NULL for admin notifications
-  const [notifs] = await db.query('SELECT * FROM notifications WHERE user_id IS NULL ORDER BY created_at DESC LIMIT 50');
-  res.json(notifs);
-}));
-
 router.patch('/notifications/mark-all-read', wrap(async (_req, res) => {
   await db.query('UPDATE notifications SET is_read = 1 WHERE user_id IS NULL AND is_read = 0');
   res.json({ success: true });
@@ -2192,7 +2187,7 @@ router.patch('/notifications/mark-all-read', wrap(async (_req, res) => {
 
 router.patch('/notifications/:id', wrap(async (req, res) => {
   const { is_read } = req.body;
-  await db.query('UPDATE notifications SET is_read = ? WHERE id = ?', [is_read ? 1 : 0, req.params.id]);
+  await db.query('UPDATE notifications SET is_read = ? WHERE id = ? AND user_id IS NULL', [is_read ? 1 : 0, req.params.id]);
   res.json({ success: true });
 }));
 

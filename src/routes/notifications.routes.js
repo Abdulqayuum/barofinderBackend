@@ -5,9 +5,27 @@ import { wrap } from '../middleware/error-handler.js';
 
 const router = Router();
 
+function normalizeNotificationRow(row) {
+  if (!row) return row;
+
+  let metadata = row.metadata ?? {};
+  if (typeof metadata === 'string') {
+    try {
+      metadata = JSON.parse(metadata);
+    } catch {
+      metadata = {};
+    }
+  }
+
+  return {
+    ...row,
+    metadata: metadata && typeof metadata === 'object' ? metadata : {},
+  };
+}
+
 router.get('/', authMiddleware, wrap(async (req, res) => {
   const [rows] = await db.query('SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC', [req.user.id]);
-  res.json(rows);
+  res.json(rows.map(normalizeNotificationRow));
 }));
 
 router.patch('/:id/read', authMiddleware, wrap(async (req, res) => {
