@@ -295,13 +295,13 @@ router.get('/overview', wrap(async (_req, res) => {
   const [[pendingEnrollments]] = await db.query('SELECT COUNT(*) AS pending_enrollments FROM course_enrollments WHERE status = "pending"');
 
   const [recentUsers] = await db.query(
-    'SELECT p.full_name, p.email, p.role, p.created_at FROM profiles p ORDER BY p.created_at DESC LIMIT 5'
+    'SELECT p.full_name, p.email, p.role, p.created_at FROM profiles p ORDER BY p.created_at DESC LIMIT 12'
   );
 
   const [recentTutors] = await db.query(
     `SELECT p.full_name AS name, tp.verification_status AS status, tp.created_at 
      FROM tutor_profiles tp JOIN profiles p ON p.user_id = tp.user_id 
-     ORDER BY tp.created_at DESC LIMIT 5`
+     ORDER BY tp.created_at DESC LIMIT 12`
   );
 
   const [revenueData] = await db.query(
@@ -1899,7 +1899,7 @@ router.delete('/messages/:id', wrap(async (req, res) => {
 
 router.get('/activity-logs', wrap(async (_req, res) => {
   const [rows] = await db.query(
-    `SELECT al.*, p.full_name, p.role
+    `SELECT al.*, p.full_name AS user_name, p.role AS profile_role
      FROM activity_logs al
      LEFT JOIN profiles p ON p.user_id = al.user_id
      ORDER BY al.created_at DESC`
