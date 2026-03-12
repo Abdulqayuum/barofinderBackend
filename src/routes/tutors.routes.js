@@ -364,6 +364,8 @@ router.post('/', authMiddleware, validateBody(upsertTutorSchema), wrap(async (re
     );
   }
 
+  await db.query("UPDATE profiles SET role = 'tutor' WHERE user_id = ?", [req.user.id]);
+
   const [updated] = await db.query('SELECT * FROM tutor_profiles WHERE user_id = ?', [req.user.id]);
   res.json(toTutorResponse(updated[0]));
 }));
