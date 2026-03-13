@@ -5,6 +5,7 @@ import { validateBody } from '../middleware/validation.js';
 import { upsertTutorSchema } from '../schemas/tutor.schema.js';
 import { getPagination } from '../utils/pagination.js';
 import { wrap } from '../middleware/error-handler.js';
+import { createImportantAdminNotificationSafely } from '../utils/notification-delivery.js';
 import { toPublicUploadDocuments, toPublicUploadUrl, toStoredUploadDocuments, toStoredUploadPath } from '../utils/uploads.js';
 import { assertAppSettingEnabled, assertPlatformWritable, getAppSettingValue } from '../utils/app-settings.js';
 
@@ -293,6 +294,7 @@ router.post('/', authMiddleware, validateBody(upsertTutorSchema), wrap(async (re
   const data = req.body;
   const [rows] = await db.query('SELECT id FROM tutor_profiles WHERE user_id = ?', [req.user.id]);
   const existing = rows[0];
+  const isNewTutorRequest = !existing;
   const defaultCurrency = await getAppSettingValue('currency_default', 'USD');
 
   const payload = {
@@ -365,6 +367,26 @@ router.post('/', authMiddleware, validateBody(upsertTutorSchema), wrap(async (re
   }
 
   await db.query("UPDATE profiles SET role = 'tutor' WHERE user_id = ?", [req.user.id]);
+
+  if (isNewTutorRequest) {
+    const [profileRows] = await db.query(
+      'SELECT full_name, email FROM profiles WHERE user_id = ? LIMIT 1',
+      [req.user.id],
+    );
+    const profile = profileRows[0] || null;
+
+    await createImportantAdminNotificationSafely({
+      serviceKey: 'verification',
+      type: 'new_tutor',
+      title: 'New tutor request',
+      message: `${profile?.full_name || 'A user'} submitted a tutor profile for verification.`,
+      metadata: {
+        tutor_user_id: req.user.id,
+        email: profile?.email || null,
+        path: '/admin/tutors',
+      },
+    }, 'new tutor request notification');
+  }
 
   const [updated] = await db.query('SELECT * FROM tutor_profiles WHERE user_id = ?', [req.user.id]);
   res.json(toTutorResponse(updated[0]));

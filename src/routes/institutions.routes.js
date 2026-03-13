@@ -18,7 +18,10 @@ import {
   assertPlatformWritable,
   getAppSettingValue,
 } from '../utils/app-settings.js';
-import { createImportantUserNotification } from '../utils/notification-delivery.js';
+import {
+  createImportantAdminNotificationSafely,
+  createImportantUserNotification,
+} from '../utils/notification-delivery.js';
 
 const router = Router();
 const INSTITUTION_APPROVAL_STATUSES = new Set(['pending', 'approved', 'rejected', 'suspended']);
@@ -486,12 +489,15 @@ router.post('/me', authMiddleware, institutionOnly, validateBody(upsertInstituti
     contact_email: normalizeOptionalString(data.contact_email),
     contact_phone: normalizeOptionalString(data.contact_phone),
   };
+  const isNewInstitutionRequest = !existing;
+  const isInstitutionResubmission = existing?.approval_status === 'rejected';
+  let nextApprovalStatus = existing?.approval_status || 'pending';
 
   const conn = await db.getConnection();
   try {
     await conn.beginTransaction();
 
-    const nextApprovalStatus = existing?.approval_status === 'rejected'
+    nextApprovalStatus = existing?.approval_status === 'rejected'
       ? 'pending'
       : (existing?.approval_status || 'pending');
 
@@ -564,6 +570,22 @@ router.post('/me', authMiddleware, institutionOnly, validateBody(upsertInstituti
     throw error;
   } finally {
     conn.release();
+  }
+
+  if (isNewInstitutionRequest || (isInstitutionResubmission && nextApprovalStatus === 'pending')) {
+    await createImportantAdminNotificationSafely({
+      serviceKey: 'institution_approvals',
+      type: 'new_institution',
+      title: isInstitutionResubmission ? 'Institution request resubmitted' : 'New institution request',
+      message: isInstitutionResubmission
+        ? `${payload.institution_name} resubmitted its institution profile for approval.`
+        : `${payload.institution_name} submitted an institution profile for approval.`,
+      metadata: {
+        institution_user_id: req.user.id,
+        institution_name: payload.institution_name,
+        path: '/admin/institutions',
+      },
+    }, 'new institution request notification');
   }
 
   res.json(await loadInstitutionProfileByUserId(req.user.id));

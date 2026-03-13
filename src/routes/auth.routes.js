@@ -24,6 +24,7 @@ import {
 } from '../schemas/auth.schema.js';
 import { wrap } from '../middleware/error-handler.js';
 import { buildPasswordResetUrl, sendOTP, sendPasswordResetEmail } from '../utils/mailer.js';
+import { createImportantAdminNotificationSafely } from '../utils/notification-delivery.js';
 import { toPublicUploadUrl } from '../utils/uploads.js';
 import { assertAppSettingEnabled, assertPlatformWritable } from '../utils/app-settings.js';
 
@@ -57,6 +58,13 @@ async function verifyPassword(inputPassword, storedPasswordHash) {
     return inputPassword === storedPasswordHash;
   }
   return bcrypt.compare(inputPassword, storedPasswordHash);
+}
+
+function describeRegisteredAccount(role, isParent) {
+  if (role === 'institution') return 'an institution account';
+  if (role === 'tutor') return 'a tutor account';
+  if (role === 'parent' || isParent) return 'a parent account';
+  return 'a student account';
 }
 
 router.post('/request-signup-otp', authRateLimiter, validateBody(requestOtpSchema), wrap(async (req, res) => {
@@ -170,6 +178,19 @@ router.post('/signup', authRateLimiter, validateBody(signupSchema), wrap(async (
   } finally {
     conn.release();
   }
+
+  const registeredRole = data.role || 'student';
+  await createImportantAdminNotificationSafely({
+    type: 'new_user',
+    title: 'New user registration',
+    message: `${data.full_name} registered ${describeRegisteredAccount(registeredRole, data.is_parent === true)}.`,
+    metadata: {
+      user_id: userId,
+      role: registeredRole,
+      email: data.email,
+      path: '/admin/users',
+    },
+  }, 'new user registration notification');
 
   res.status(201).json({
     user: { id: userId, email: data.email },

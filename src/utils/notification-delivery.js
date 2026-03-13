@@ -199,3 +199,12 @@ export async function createImportantAdminNotification({
 
   return notification;
 }
+
+export async function createImportantAdminNotificationSafely(payload, context = 'important admin notification') {
+  try {
+    return await createImportantAdminNotification(payload);
+  } catch (error) {
+    console.error(`Failed to create ${context}:`, error);
+    return null;
+  }
+}
