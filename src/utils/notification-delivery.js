@@ -1,6 +1,7 @@
 import { v4 as uuid } from 'uuid';
 import db from '../config/database.js';
 import { getBooleanAppSetting, getStringArrayAppSetting } from './app-settings.js';
+import { getAppBaseUrl } from './app-url.js';
 import { sendNotificationEmail } from './mailer.js';
 
 function serializeMetadata(metadata) {
@@ -11,23 +12,6 @@ function serializeMetadata(metadata) {
 function getNotificationPath(metadata) {
   if (!metadata || typeof metadata !== 'object') return null;
   return typeof metadata.path === 'string' && metadata.path.trim() ? metadata.path.trim() : null;
-}
-
-function getAppBaseUrl() {
-  const candidates = [
-    process.env.FRONTEND_URL,
-    process.env.APP_URL,
-    process.env.CORS_ORIGIN?.split(',')[0],
-  ];
-
-  for (const candidate of candidates) {
-    if (typeof candidate !== 'string') continue;
-    const trimmed = candidate.trim();
-    if (!trimmed) continue;
-    return trimmed.replace(/\/+$/, '');
-  }
-
-  return null;
 }
 
 function buildNotificationActionUrl(metadata) {

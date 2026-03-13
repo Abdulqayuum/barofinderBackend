@@ -1,4 +1,5 @@
 import nodemailer from 'nodemailer';
+import { getAppBaseUrl } from './app-url.js';
 
 const transporter = nodemailer.createTransport({
     host: (process.env.SMTP_HOST || 'smtp.ethereal.email').trim(),
@@ -26,21 +27,7 @@ function getSenderFrom() {
 }
 
 function getFrontendBaseUrl() {
-    const candidates = [
-        process.env.FRONTEND_URL,
-        process.env.APP_URL,
-        process.env.CORS_ORIGIN?.split(',')[0],
-        'http://localhost:8080',
-    ];
-
-    for (const candidate of candidates) {
-        if (typeof candidate !== 'string') continue;
-        const trimmed = candidate.trim();
-        if (!trimmed) continue;
-        return trimmed.replace(/\/+$/, '');
-    }
-
-    return 'http://localhost:8080';
+    return getAppBaseUrl();
 }
 
 function escapeHtml(value) {
