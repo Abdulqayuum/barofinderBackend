@@ -6,6 +6,7 @@ import { requireRole } from '../middleware/roles.js';
 import { validateBody } from '../middleware/validation.js';
 import { wrap } from '../middleware/error-handler.js';
 import { v4 as uuid } from 'uuid';
+import { sendTutorVerificationApprovedEmail } from '../utils/mailer.js';
 import { toPublicUploadDocuments, toPublicUploadUrl, toStoredUploadDocuments, toStoredUploadPath } from '../utils/uploads.js';
 import { getAppSettingValue, listAppSettings, serializeAppSettingValue } from '../utils/app-settings.js';
 import { adminTutorReportUpdateSchema } from '../schemas/report.schema.js';
@@ -915,7 +916,19 @@ router.patch('/tutors/:id/verify', wrap(async (req, res) => {
     return res.status(400).json({ error: 'Invalid verification status', code: 'BAD_REQUEST' });
   }
 
-  const [tRows] = await db.query('SELECT user_id, verification_documents FROM tutor_profiles WHERE id = ?', [id]);
+  const [tRows] = await db.query(
+    `SELECT
+      tp.user_id,
+      tp.verification_documents,
+      COALESCE(p.full_name, 'there') AS full_name,
+      COALESCE(p.email, u.email) AS email
+     FROM tutor_profiles tp
+     JOIN users u ON u.id = tp.user_id
+     LEFT JOIN profiles p ON p.user_id = tp.user_id
+     WHERE tp.id = ?
+     LIMIT 1`,
+    [id],
+  );
   const tutor = tRows[0];
   if (!tutor) return res.status(404).json({ error: 'Tutor not found' });
 
@@ -980,6 +993,15 @@ router.patch('/tutors/:id/verify', wrap(async (req, res) => {
         message: msg,
         metadata: { path: '/profile' },
       });
+      if (tutor.email) {
+        await sendTutorVerificationApprovedEmail({
+          to: tutor.email,
+          recipientName: tutor.full_name,
+          hasVerifiedBadge: grantBadge,
+        }).catch((error) => {
+          console.error('Failed to send tutor verification approved email:', error);
+        });
+      }
     }
   }
 

@@ -170,6 +170,54 @@ export async function sendPasswordResetEmail({
     });
 }
 
+export async function sendTutorVerificationApprovedEmail({
+    to,
+    recipientName,
+    hasVerifiedBadge = false,
+}) {
+    const safeRecipientName = typeof recipientName === 'string' && recipientName.trim()
+        ? recipientName.trim()
+        : 'there';
+    const safeActionUrl = `${getFrontendBaseUrl()}/tutor-registration`;
+    const badgeMessage = hasVerifiedBadge
+        ? 'Your Verified Badge is now visible on your tutor profile.'
+        : 'Complete your verification documents to unlock the Verified Badge.';
+
+    return sendPlatformEmail({
+        to,
+        subject: 'Macalinhub: Tutor Profile Verified',
+        text: [
+            `Hi ${safeRecipientName},`,
+            '',
+            'Your tutor profile has been approved by the Macalinhub team.',
+            badgeMessage,
+            '',
+            `Open your tutor profile: ${safeActionUrl}`,
+            '',
+            'Macalinhub',
+        ].join('\n'),
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 640px; margin: 0 auto; padding: 24px; color: #111827;">
+            <p style="margin: 0 0 16px;">Hi ${escapeHtml(safeRecipientName)},</p>
+            <h2 style="margin: 0 0 16px; font-size: 22px;">Your tutor profile is verified</h2>
+            <p style="margin: 0 0 16px; line-height: 1.6;">
+              Your tutor profile has been approved by the Macalinhub team.
+            </p>
+            <p style="margin: 0 0 20px; line-height: 1.6;">
+              ${escapeHtml(badgeMessage)}
+            </p>
+            <p style="margin: 0 0 24px;">
+              <a
+                href="${escapeHtml(safeActionUrl)}"
+                style="display: inline-block; background: #111827; color: #ffffff; text-decoration: none; padding: 12px 18px; border-radius: 10px; font-weight: 600;"
+              >Open Tutor Profile</a>
+            </p>
+            <p style="margin: 0; color: #6b7280; font-size: 14px;">Macalinhub</p>
+          </div>
+        `,
+    });
+}
+
 export const sendOTP = async (to, otp) => {
     if (!process.env.SMTP_USER) {
         console.log(`\n============================`);
